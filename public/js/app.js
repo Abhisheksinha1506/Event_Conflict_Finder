@@ -2639,8 +2639,11 @@ class EventConflictFinder {
       return true;
     }
 
-    // Otherwise check free search limit
-    return this.freeSearchCount < this.freeSearchLimit;
+    // Always allow search attempts - let the server be the source of truth
+    // The server will return 402 if the limit is reached, and we'll handle it then
+    // This prevents showing paywall on page load based on potentially stale localStorage data
+    // The server tracks searches accurately with proper time windows and per-user/IP tracking
+    return true;
   }
 
   incrementFreeSearchCount() {

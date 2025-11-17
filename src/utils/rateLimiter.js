@@ -14,8 +14,20 @@ class RateLimiter {
   }
 
   async init() {
+    // Skip Redis connection if REDIS_URL is not set (common in serverless environments)
+    const redisUrl = process.env.REDIS_URL;
+    if (!redisUrl || redisUrl === 'redis://localhost:6379') {
+      // Only warn if explicitly trying to use localhost in production
+      if (process.env.NODE_ENV === 'production' && redisUrl === 'redis://localhost:6379') {
+        console.warn('⚠️  Rate Limiter: Redis URL not configured. Using in-memory fallback. Set REDIS_URL for distributed rate limiting.');
+      } else if (!redisUrl) {
+        console.warn('⚠️  Rate Limiter: Redis URL not configured. Using in-memory fallback. Set REDIS_URL for distributed rate limiting.');
+      }
+      this.connected = false;
+      return;
+    }
+
     try {
-      const redisUrl = process.env.REDIS_URL || 'redis://localhost:6379';
       this.client = redis.createClient({
         url: redisUrl,
         socket: {
@@ -28,8 +40,13 @@ class RateLimiter {
         }
       });
 
+      // Only log errors once to reduce log noise
+      let errorLogged = false;
       this.client.on('error', (err) => {
-        console.error('Rate Limiter Redis Error:', err);
+        if (!errorLogged) {
+          console.error('Rate Limiter Redis Error:', err.message);
+          errorLogged = true;
+        }
         this.connected = false;
       });
 

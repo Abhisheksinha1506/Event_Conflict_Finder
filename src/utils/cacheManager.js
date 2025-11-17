@@ -19,8 +19,20 @@ class CacheManager {
   }
 
   async init() {
+    // Skip Redis connection if REDIS_URL is not set (common in serverless environments)
+    const redisUrl = process.env.REDIS_URL;
+    if (!redisUrl || redisUrl === 'redis://localhost:6379') {
+      // Only warn if explicitly trying to use localhost in production
+      if (process.env.NODE_ENV === 'production' && redisUrl === 'redis://localhost:6379') {
+        console.warn('⚠️  Redis URL not configured. Caching disabled. Set REDIS_URL environment variable for cloud Redis.');
+      } else if (!redisUrl) {
+        console.warn('⚠️  Redis URL not configured. Caching disabled. Set REDIS_URL environment variable to enable caching.');
+      }
+      this.connected = false;
+      return;
+    }
+
     try {
-      const redisUrl = process.env.REDIS_URL || 'redis://localhost:6379';
       this.client = redis.createClient({
         url: redisUrl,
         socket: {
@@ -34,8 +46,13 @@ class CacheManager {
         }
       });
 
+      // Only log errors once to reduce log noise
+      let errorLogged = false;
       this.client.on('error', (err) => {
-        console.error('Redis Client Error:', err);
+        if (!errorLogged) {
+          console.error('Redis Client Error:', err.message);
+          errorLogged = true;
+        }
         this.connected = false;
         this.cacheStats.errors++;
       });
