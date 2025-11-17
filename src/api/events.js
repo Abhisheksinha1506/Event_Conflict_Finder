@@ -5,6 +5,7 @@ const BandsintownService = require('../services/bandsintown');
 const rateLimiter = require('../utils/rateLimiter');
 const cacheManager = require('../utils/cacheManager');
 const monitoring = require('../utils/monitoring');
+const paywallService = require('../utils/paywallService');
 
 // Track pending requests for deduplication (same location queries)
 const pendingRequests = new Map();
@@ -79,6 +80,29 @@ router.get('/search', async (req, res) => {
 
     // Get user identifier for rate limiting
     const userId = rateLimiter.getUserIdentifier(req);
+    const userEmail = (req.headers['x-user-email'] || '').toString().toLowerCase().trim();
+    let paywallOutcome = null;
+
+    if (userEmail && !paywallService.paywallUnavailable()) {
+      try {
+        paywallOutcome = await paywallService.recordSearchUsage(userEmail);
+        if (!paywallOutcome.allowed) {
+          return res.status(402).json({
+            error: 'PAYWALL_LIMIT_REACHED',
+            message: 'Free searches exhausted. Purchase the unlimited plan to continue.',
+            planStatus: paywallOutcome.planStatus,
+            searchCount: paywallOutcome.searchCount,
+            freeSearchLimit: paywallService.FREE_SEARCH_LIMIT
+          });
+        }
+      } catch (error) {
+        console.error('Paywall enforcement error:', error);
+        return res.status(500).json({
+          error: 'PAYWALL_ENFORCEMENT_FAILED',
+          message: 'Unable to verify subscription status. Please try again later.'
+        });
+      }
+    }
 
     // Check for request deduplication - if same query is already in progress, wait for it
     const requestKey = `search:${latitude.toFixed(4)}:${longitude.toFixed(4)}:${searchRadius}`;
@@ -180,6 +204,9 @@ router.get('/search', async (req, res) => {
     // Add cache headers
     res.set('Cache-Control', 'public, max-age=900'); // 15 minutes
     res.set('X-Cache-Hit-Rate', result.cache.hitRate);
+    if (paywallOutcome) {
+      res.set('X-Paywall-Plan', paywallOutcome.planStatus || 'free');
+    }
     
     res.json(result);
   } catch (error) {

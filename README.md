@@ -235,6 +235,55 @@ See [RATE_LIMITING_IMPLEMENTATION.md](./RATE_LIMITING_IMPLEMENTATION.md) for det
 - **Caching**: Results cached for 15 minutes to reduce API calls
 - **Conflict Detection**: Uses Haversine formula for distance calculation
 - **Time Buffer**: Configurable (default: 30 minutes)
+- **Premium Searches**: Users get 3 free searches before being prompted to sign in or purchase the unlimited plan
+
+## 💸 Premium Access & Payments
+
+The application now supports a freemium flow with Supabase for entitlement storage and Polar for checkout.
+
+### Environment Variables
+
+| Variable | Purpose |
+| --- | --- |
+| `SUPABASE_URL` | Supabase project URL |
+| `SUPABASE_SERVICE_ROLE_KEY` | Service role key (server-side only) |
+| `SUPABASE_PLAN_TABLE` | Optional. Defaults to `user_plans` |
+| `FREE_SEARCH_LIMIT` | Optional. Defaults to `3` |
+| `POLAR_API_KEY` | Polar API key for checkout creation |
+| `POLAR_PRODUCT_ID` | Polar product identifier for the unlimited plan |
+| `POLAR_SUCCESS_URL` / `POLAR_CANCEL_URL` | Optional overrides for redirect URLs |
+| `POLAR_WEBHOOK_SECRET` | Secret used to validate Polar webhook payloads |
+| `FRONTEND_URL` | Public URL for success redirect fallbacks |
+
+### Supabase Table
+
+Create (or update) a table such as `user_plans`:
+
+```sql
+create table if not exists user_plans (
+  email text primary key,
+  plan_status text default 'free',
+  search_count int default 0,
+  checkout_id text,
+  updated_at timestamptz default now()
+);
+```
+
+The backend uses the Supabase service role key to insert/update plan records server-side.
+
+### Polar Checkout
+
+1. Create a Polar product representing the unlimited plan and capture its `POLAR_PRODUCT_ID`.
+2. Configure a hosted checkout link with success/cancel URLs pointing back to your deployment (e.g. `https://example.com?payment=success`).
+3. Create a webhook in Polar pointing to `/api/paywall/webhook` and reuse the `POLAR_WEBHOOK_SECRET`.
+
+### User Flow
+
+1. Visitors can run up to three searches anonymously.
+2. On the third search, a modal prompts them to sign in (existing plan) or create a new user and buy the plan.
+3. Existing users enter their email, which is validated against Supabase. Active plans unlock unlimited searches immediately.
+4. New users start a Polar checkout. After payment Polar redirects back with a success flag and the backend marks the plan as `active`.
+5. Returning users only need to re-enter their email next time this paywall appears.
 
 ## 🤝 Contributing
 

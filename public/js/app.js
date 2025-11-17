@@ -19,6 +19,14 @@ class EventConflictFinder {
     this.lastSearchRadius = null; // Track last search radius to detect significant changes
     this.isSelectionUpdate = false; // Prevent map events triggered by selection from refetching
     this.performanceLoggingEnabled = this.shouldLogPerformance();
+    this.paywallState = this.loadPaywallState();
+    this.freeSearchLimit = this.paywallState.freeSearchLimit;
+    this.freeSearchCount = this.paywallState.freeSearchCount;
+    this.userEmail = this.paywallState.email;
+    this.hasUnlimitedAccess = this.paywallState.unlimitedAccess;
+    this.paywallModal = null;
+    this.paywallMessageElement = null;
+    this.paywallActiveTab = 'signin';
     
     // Supported countries with strong/variable coverage
     this.supportedCountries = [
@@ -72,6 +80,8 @@ class EventConflictFinder {
   async init() {
     this.initMap();
     this.setupEventListeners();
+    this.setupPaywallModal();
+    this.checkPostCheckoutStatus();
   }
 
   initMap() {
@@ -354,6 +364,11 @@ class EventConflictFinder {
     // Hide suggestions when searching
     this.hideSuggestions();
 
+    if (!this.canProceedWithSearch()) {
+      this.showPaywallModal('limit');
+      return;
+    }
+
     try {
       this.showLoading();
       this.isManualSearch = true; // Prevent zoom updates during manual search
@@ -383,8 +398,21 @@ class EventConflictFinder {
         this.clickMarker = null;
       }
 
+      const headers = {};
+      if (this.userEmail) {
+        headers['X-User-Email'] = this.userEmail;
+      }
+
       // Fetch events from API
-      const response = await fetch(`/api/events/search?lat=${coords.lat}&lon=${coords.lng}&radius=${radius}`);
+      const response = await fetch(`/api/events/search?lat=${coords.lat}&lon=${coords.lng}&radius=${radius}`, {
+        headers
+      });
+
+      if (response.status === 402) {
+        const payload = await response.json().catch(() => ({}));
+        this.handleServerPaywallLimit(payload);
+        return;
+      }
       
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
@@ -392,6 +420,7 @@ class EventConflictFinder {
 
       const data = await response.json();
       this.events = data.events || [];
+      this.syncPlanHeaders(response.headers);
 
       // Only center map on location if no events found (so user can see where they searched)
       // Otherwise, let displayEvents() handle the map view based on actual event locations
@@ -404,6 +433,10 @@ class EventConflictFinder {
 
       // Detect conflicts
       await this.detectConflicts(timeBuffer);
+
+      if (!this.hasUnlimitedAccess) {
+        this.incrementFreeSearchCount();
+      }
 
       // Store search parameters for zoom/pan comparison
       this.lastSearchRadius = radius;
@@ -675,7 +708,25 @@ class EventConflictFinder {
         this.lastZoomLevel = currentZoom;
         
         // Fetch events for the visible area
-        const response = await fetch(`/api/events/search?lat=${center.lat}&lon=${center.lng}&radius=${searchRadius}`);
+        if (!this.canProceedWithSearch()) {
+          this.showPaywallModal('limit');
+          return;
+        }
+
+        const headers = {};
+        if (this.userEmail) {
+          headers['X-User-Email'] = this.userEmail;
+        }
+
+        const response = await fetch(`/api/events/search?lat=${center.lat}&lon=${center.lng}&radius=${searchRadius}`, {
+          headers
+        });
+
+        if (response.status === 402) {
+          const payload = await response.json().catch(() => ({}));
+          this.handleServerPaywallLimit(payload);
+          return;
+        }
         
         if (!response.ok) {
           throw new Error(`HTTP error! status: ${response.status}`);
@@ -683,12 +734,16 @@ class EventConflictFinder {
 
         const data = await response.json();
         this.events = data.events || [];
+        this.syncPlanHeaders(response.headers);
         
         // Update events display
         this.displayEvents();
         
         // Detect conflicts
         await this.detectConflicts(timeBuffer);
+        if (!this.hasUnlimitedAccess) {
+          this.incrementFreeSearchCount();
+        }
         
         // Ensure markers are visible after map view update
         setTimeout(() => {
@@ -2339,6 +2394,318 @@ class EventConflictFinder {
         console.error('Error ensuring marker visibility:', e);
       }
     });
+  }
+
+  loadPaywallState() {
+    let storedLimit = 3;
+    try {
+      const rawLimit = parseInt(localStorage.getItem('ecf_free_search_limit') || '3', 10);
+      storedLimit = isNaN(rawLimit) ? 3 : rawLimit;
+    } catch (error) {
+      storedLimit = 3;
+    }
+
+    const defaults = {
+      freeSearchLimit: storedLimit,
+      freeSearchCount: 0,
+      email: '',
+      unlimitedAccess: false
+    };
+
+    try {
+      const storedCount = parseInt(localStorage.getItem('ecf_free_search_count') || '0', 10);
+      const storedEmail = localStorage.getItem('ecf_user_email') || '';
+      const unlimited = localStorage.getItem('ecf_unlimited_access') === 'true';
+      return {
+        ...defaults,
+        freeSearchCount: isNaN(storedCount) ? 0 : storedCount,
+        email: storedEmail,
+        unlimitedAccess: unlimited
+      };
+    } catch (error) {
+      console.warn('Unable to load paywall state:', error);
+      return defaults;
+    }
+  }
+
+  persistPaywallState(updates = {}) {
+    this.paywallState = {
+      ...this.paywallState,
+      ...updates
+    };
+
+    this.freeSearchCount = this.paywallState.freeSearchCount;
+    this.userEmail = this.paywallState.email;
+    this.hasUnlimitedAccess = this.paywallState.unlimitedAccess;
+
+    try {
+      localStorage.setItem('ecf_free_search_count', String(this.paywallState.freeSearchCount || 0));
+      localStorage.setItem('ecf_user_email', this.paywallState.email || '');
+      localStorage.setItem('ecf_unlimited_access', this.paywallState.unlimitedAccess ? 'true' : 'false');
+      localStorage.setItem('ecf_free_search_limit', String(this.freeSearchLimit));
+    } catch (error) {
+      console.warn('Unable to persist paywall state:', error);
+    }
+  }
+
+  canProceedWithSearch() {
+    if (this.hasUnlimitedAccess) {
+      return true;
+    }
+
+    return this.freeSearchCount < this.freeSearchLimit;
+  }
+
+  incrementFreeSearchCount() {
+    if (this.hasUnlimitedAccess) {
+      return;
+    }
+
+    const newCount = this.freeSearchCount + 1;
+    this.persistPaywallState({ freeSearchCount: newCount });
+
+    if (newCount >= this.freeSearchLimit) {
+      this.showPaywallModal('limit');
+    }
+  }
+
+  setupPaywallModal() {
+    this.paywallModal = document.getElementById('paywall-modal');
+    if (!this.paywallModal) {
+      return;
+    }
+
+    this.paywallMessageElement = document.getElementById('paywall-message');
+    this.paywallModalCopy = document.getElementById('paywall-modal-copy');
+    this.globalToastElement = document.getElementById('global-toast');
+
+    const closeBtn = document.getElementById('paywall-modal-close');
+    if (closeBtn) {
+      closeBtn.addEventListener('click', () => this.hidePaywallModal());
+    }
+
+    const tabSignIn = document.getElementById('paywall-tab-signin');
+    const tabSignUp = document.getElementById('paywall-tab-signup');
+    if (tabSignIn && tabSignUp) {
+      tabSignIn.addEventListener('click', () => this.switchPaywallTab('signin'));
+      tabSignUp.addEventListener('click', () => this.switchPaywallTab('signup'));
+    }
+
+    const signInForm = document.getElementById('paywall-signin-form');
+    if (signInForm) {
+      signInForm.addEventListener('submit', (event) => this.handleSignInSubmit(event));
+    }
+
+    const signupForm = document.getElementById('paywall-signup-form');
+    if (signupForm) {
+      signupForm.addEventListener('submit', (event) => this.handleSignupSubmit(event));
+    }
+
+    this.switchPaywallTab(this.paywallActiveTab);
+  }
+
+  showPaywallModal(reason = 'limit') {
+    if (!this.paywallModal) return;
+
+    const message = reason === 'limit'
+      ? `You've reached your ${this.freeSearchLimit} free searches.`
+      : 'Free searches are locked for this account.';
+    if (this.paywallModalCopy) {
+      this.paywallModalCopy.textContent = `${message} To continue, sign in with an email that has an active plan or purchase the unlimited plan.`;
+    }
+
+    this.switchPaywallTab('signin');
+    this.paywallModal.classList.remove('hidden');
+    document.body.style.overflow = 'hidden';
+    this.setPaywallMessage('');
+  }
+
+  hidePaywallModal() {
+    if (!this.paywallModal) return;
+    this.paywallModal.classList.add('hidden');
+    document.body.style.overflow = '';
+  }
+
+  setPaywallMessage(message, type = 'info') {
+    if (!this.paywallMessageElement) return;
+    this.paywallMessageElement.textContent = message || '';
+    this.paywallMessageElement.setAttribute('data-variant', type);
+  }
+
+  switchPaywallTab(tab) {
+    this.paywallActiveTab = tab;
+    const signinPanel = document.getElementById('paywall-signin-panel');
+    const signupPanel = document.getElementById('paywall-signup-panel');
+    const tabSignIn = document.getElementById('paywall-tab-signin');
+    const tabSignUp = document.getElementById('paywall-tab-signup');
+
+    if (signinPanel && signupPanel && tabSignIn && tabSignUp) {
+      if (tab === 'signin') {
+        signinPanel.classList.remove('hidden');
+        signupPanel.classList.add('hidden');
+        tabSignIn.classList.add('active');
+        tabSignUp.classList.remove('active');
+      } else {
+        signinPanel.classList.add('hidden');
+        signupPanel.classList.remove('hidden');
+        tabSignIn.classList.remove('active');
+        tabSignUp.classList.add('active');
+      }
+    }
+
+    this.setPaywallMessage('');
+  }
+
+  async handleSignInSubmit(event) {
+    event.preventDefault();
+    const emailInput = document.getElementById('paywall-signin-email');
+    if (!emailInput) return;
+
+    const email = emailInput.value.trim();
+    if (!email) {
+      this.setPaywallMessage('Please enter your email address.', 'warning');
+      return;
+    }
+
+    try {
+      this.setPaywallMessage('Checking your plan...', 'info');
+      const status = await this.verifyPlanForEmail(email);
+      if (status.planStatus === 'active') {
+        this.persistPaywallState({
+          email,
+          unlimitedAccess: true,
+          freeSearchCount: 0
+        });
+        this.showToast('Now you can continue searching. Next time, just enter your email to continue.', 'success');
+        this.hidePaywallModal();
+      } else {
+        this.setPaywallMessage('No active plan found for this email. Purchase the unlimited plan to continue.', 'error');
+      }
+    } catch (error) {
+      console.error('Sign-in verification failed:', error);
+      this.setPaywallMessage('Unable to verify plan. Please try again.', 'error');
+    }
+  }
+
+  async handleSignupSubmit(event) {
+    event.preventDefault();
+    const emailInput = document.getElementById('paywall-signup-email');
+    if (!emailInput) return;
+
+    const email = emailInput.value.trim();
+    if (!email) {
+      this.setPaywallMessage('Please enter your email address.', 'warning');
+      return;
+    }
+
+    try {
+      this.setPaywallMessage('Creating checkout session...', 'info');
+      const checkout = await this.startCheckoutForEmail(email);
+      if (checkout?.checkoutUrl) {
+        this.persistPaywallState({ email });
+        window.location.href = checkout.checkoutUrl;
+      } else {
+        this.setPaywallMessage('Unable to start checkout. Please try again.', 'error');
+      }
+    } catch (error) {
+      console.error('Checkout initiation failed:', error);
+      this.setPaywallMessage(error.message || 'Unable to start checkout.', 'error');
+    }
+  }
+
+  async verifyPlanForEmail(email) {
+    const response = await fetch('/api/paywall/status', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ email })
+    });
+
+    if (!response.ok) {
+      throw new Error('Failed to verify plan');
+    }
+
+    const data = await response.json();
+    if (data.freeSearchLimit) {
+      this.freeSearchLimit = data.freeSearchLimit;
+      this.persistPaywallState({ freeSearchCount: data.searchCount || 0 });
+    }
+    return data;
+  }
+
+  async startCheckoutForEmail(email) {
+    const response = await fetch('/api/paywall/checkout', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ email })
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.error || 'Checkout failed');
+    }
+
+    return await response.json();
+  }
+
+  handleServerPaywallLimit(payload = {}) {
+    if (payload.freeSearchLimit) {
+      this.freeSearchLimit = payload.freeSearchLimit;
+    }
+    if (typeof payload.searchCount === 'number') {
+      this.persistPaywallState({ freeSearchCount: payload.searchCount });
+    }
+    this.showPaywallModal('server');
+    this.setPaywallMessage('Free searches exhausted. Purchase the unlimited plan to continue.', 'warning');
+  }
+
+  syncPlanHeaders(headers) {
+    if (!headers?.get) return;
+    const plan = headers.get('X-Paywall-Plan');
+    if (plan === 'active' && !this.hasUnlimitedAccess) {
+      this.persistPaywallState({
+        unlimitedAccess: true,
+        freeSearchCount: 0
+      });
+    }
+  }
+
+  checkPostCheckoutStatus() {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const paymentStatus = params.get('payment');
+
+      if (paymentStatus === 'success') {
+        const email = params.get('email') || this.userEmail;
+        this.persistPaywallState({
+          email: email || this.userEmail,
+          unlimitedAccess: true,
+          freeSearchCount: 0
+        });
+        this.showToast('Payment received. Now you can continue searching! Next time, just enter your email to continue.', 'success');
+        params.delete('payment');
+        if (params.has('email')) {
+          params.delete('email');
+        }
+        const newUrl = `${window.location.pathname}${params.toString() ? `?${params.toString()}` : ''}`;
+        window.history.replaceState({}, document.title, newUrl);
+      }
+    } catch (error) {
+      console.warn('Unable to process checkout status:', error);
+    }
+  }
+
+  showToast(message, variant = 'info') {
+    if (!this.globalToastElement) return;
+    this.globalToastElement.textContent = message;
+    this.globalToastElement.setAttribute('data-variant', variant);
+    this.globalToastElement.classList.remove('hidden');
+    setTimeout(() => {
+      this.globalToastElement.classList.add('hidden');
+    }, 6000);
   }
 }
 

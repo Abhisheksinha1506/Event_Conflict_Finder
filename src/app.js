@@ -5,6 +5,7 @@ const path = require('path');
 
 const eventRoutes = require('./api/events');
 const conflictRoutes = require('./api/conflicts');
+const paywallRoutes = require('./api/paywall');
 
 // Validate environment variables on startup
 function validateEnvironment() {
@@ -58,7 +59,13 @@ app.set('trust proxy', true);
 
 // Middleware
 app.use(cors());
-app.use(express.json());
+app.use(express.json({
+  verify: (req, res, buf) => {
+    if (req.originalUrl.startsWith('/api/paywall/webhook')) {
+      req.rawBody = Buffer.from(buf);
+    }
+  }
+}));
 app.use(express.urlencoded({ extended: true }));
 
 // Serve static files from public directory
@@ -67,6 +74,7 @@ app.use(express.static(path.join(__dirname, '../public')));
 // API Routes
 app.use('/api/events', eventRoutes);
 app.use('/api/conflicts', conflictRoutes);
+app.use('/api/paywall', paywallRoutes);
 app.use('/api/monitoring', require('./api/monitoring'));
 
 // Root route - serve index.html
