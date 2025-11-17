@@ -278,36 +278,74 @@ async function markCheckoutInitiated(email, checkoutId) {
 }
 
 async function activatePlan(email, checkoutId) {
-  if (paywallUnavailable()) return;
+  if (paywallUnavailable()) {
+    console.error('❌ CRITICAL: Paywall unavailable - Supabase not configured!');
+    console.error('   SUPABASE_URL:', process.env.SUPABASE_URL ? 'set' : 'missing');
+    console.error('   SUPABASE_SERVICE_ROLE_KEY:', process.env.SUPABASE_SERVICE_ROLE_KEY ? 'set' : 'missing');
+    throw new Error('Paywall unavailable - Supabase not configured');
+  }
+  
   const normalized = normalizeEmail(email);
-  if (!normalized) return;
+  if (!normalized) {
+    console.error('❌ CRITICAL: Cannot activate plan - invalid email:', email);
+    throw new Error('Invalid email address');
+  }
+
+  console.log(`🔄 activatePlan called: email=${normalized}, checkoutId=${checkoutId || 'none'}`);
+  console.log(`📊 Table name: ${TABLE_NAME}`);
 
   // ONLY create/update database record when payment succeeds
   // This is the ONLY place where we set plan_status to 'active'
-  const { error } = await supabase
-    .from(TABLE_NAME)
-    .upsert({
-      email: normalized,
-      plan_status: 'active',
-      checkout_id: checkoutId || null,
-      search_count: 0, // Reset search count when payment succeeds
-      updated_at: new Date().toISOString()
-    }, { 
-      onConflict: 'email',
-      ignoreDuplicates: false
-    });
+  try {
+    const { data, error } = await supabase
+      .from(TABLE_NAME)
+      .upsert({
+        email: normalized,
+        plan_status: 'active',
+        checkout_id: checkoutId || null,
+        search_count: 0, // Reset search count when payment succeeds
+        updated_at: new Date().toISOString()
+      }, { 
+        onConflict: 'email',
+        ignoreDuplicates: false
+      })
+      .select();
 
-  if (error) {
-    console.error('Supabase activatePlan error:', error);
+    if (error) {
+      console.error('❌ Supabase activatePlan error:', error);
+      console.error('   Error code:', error.code);
+      console.error('   Error message:', error.message);
+      console.error('   Error details:', error.details);
+      throw error;
+    }
+    
+    console.log(`✅ Plan activated for ${normalized}${checkoutId ? ` (checkout: ${checkoutId})` : ''}`);
+    console.log(`📦 Upsert result:`, data);
+    
+    // Verify the update was successful
+    const updated = await getUserRecord(normalized);
+    if (updated) {
+      console.log(`🔍 Verification - Retrieved record:`, {
+        email: updated.email,
+        plan_status: updated.plan_status,
+        search_count: updated.search_count,
+        checkout_id: updated.checkout_id
+      });
+      
+      if (updated.plan_status !== 'active') {
+        console.error(`❌ CRITICAL: Plan status update failed! Expected 'active', got '${updated.plan_status}'`);
+        throw new Error(`Plan activation failed - status is '${updated.plan_status}' instead of 'active'`);
+      } else {
+        console.log(`✅ Verification successful - plan_status is 'active'`);
+      }
+    } else {
+      console.error('❌ CRITICAL: Verification failed - record not found after activation!');
+      throw new Error('Record not found after activation');
+    }
+  } catch (error) {
+    console.error('❌ activatePlan exception:', error.message);
+    console.error('❌ Stack trace:', error.stack);
     throw error;
-  }
-  
-  console.log(`✅ Plan activated for ${normalized}${checkoutId ? ` (checkout: ${checkoutId})` : ''}`);
-  
-  // Verify the update was successful
-  const updated = await getUserRecord(normalized);
-  if (updated && updated.plan_status !== 'active') {
-    console.warn(`⚠️  Plan status update may have failed. Expected 'active', got '${updated.plan_status}'`);
   }
 }
 

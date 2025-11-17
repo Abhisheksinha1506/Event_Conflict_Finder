@@ -115,8 +115,8 @@ router.post('/webhook', async (req, res) => {
   // Always return 200 OK to prevent Polar from disabling the webhook
   // Even if there are errors, we log them but return success
   try {
-    console.log('📥 Polar webhook received');
-    console.log('📋 Headers:', JSON.stringify(req.headers, null, 2));
+    console.error('📥 WEBHOOK: Polar webhook received');
+    console.error('📋 WEBHOOK: Event type will be determined from payload');
     
     // Get raw body for signature verification
     // Try multiple methods to ensure we get the raw body (works on both localhost and Vercel)
@@ -151,7 +151,9 @@ router.post('/webhook', async (req, res) => {
       
       if (!signatureHeader) {
         console.warn('⚠️  Webhook missing signature header');
-        console.warn('Available headers:', Object.keys(req.headers).filter(h => h.toLowerCase().includes('polar')));
+        const allHeaderKeys = Object.keys(req.headers || {});
+        console.warn('All header keys:', allHeaderKeys.join(', '));
+        console.warn('Headers containing "polar":', allHeaderKeys.filter(h => h.toLowerCase().includes('polar')).join(', '));
         // Continue processing but log the warning - don't return early
         // This allows customer.updated and other non-payment events to be processed
       } else {
@@ -184,7 +186,7 @@ router.post('/webhook', async (req, res) => {
             } else if (!crypto.timingSafeEqual(providedBuffer, expectedBuffer)) {
               console.warn('⚠️  Signature mismatch');
             } else {
-              console.log('✅ Signature verified successfully');
+              console.error('✅ WEBHOOK: Signature verified successfully');
             }
           } catch (sigError) {
             console.error('❌ Error during signature verification:', sigError.message);
@@ -199,7 +201,7 @@ router.post('/webhook', async (req, res) => {
     let payload;
     try {
       payload = JSON.parse(rawBody.toString('utf8'));
-      console.log('📦 Webhook payload type:', payload?.type || payload?.event || 'unknown');
+      console.error('📦 WEBHOOK: Payload type:', payload?.type || payload?.event || 'unknown');
     } catch (parseError) {
       console.error('❌ Failed to parse webhook payload:', parseError.message);
       return res.status(200).json({ received: true, error: 'Invalid JSON payload' });
@@ -208,18 +210,19 @@ router.post('/webhook', async (req, res) => {
     const eventType = payload?.type || payload?.event || payload?.event_type;
     const checkoutData = payload?.data || payload?.object || payload?.checkout;
     
-    console.log('🔔 Event type:', eventType);
+    console.error('🔔 WEBHOOK: Event type:', eventType);
+    console.error('📦 WEBHOOK: Payload data keys:', Object.keys(payload?.data || {}).join(', '));
 
     // Handle customer.updated events
     if (eventType === 'customer.updated') {
       const customerEmail = payload?.data?.email;
       if (customerEmail) {
-        console.log('👤 Customer updated:', customerEmail);
+        console.error('👤 WEBHOOK: Customer updated:', customerEmail);
         // Check if customer has an active plan and update if needed
         // This is informational - no action needed unless customer status changed
         try {
           const status = await paywallService.getPlanStatus(customerEmail, true);
-          console.log('📊 Customer plan status:', status.planStatus);
+          console.error('📊 WEBHOOK: Customer plan status:', status.planStatus);
         } catch (error) {
           console.error('❌ Error checking customer status:', error.message);
         }
@@ -233,7 +236,7 @@ router.post('/webhook', async (req, res) => {
     let isCheckoutSucceeded = false;
     if (eventType === 'checkout.updated' && checkoutData?.status === 'succeeded') {
       isCheckoutSucceeded = true;
-      console.log('✅ checkout.updated with status=succeeded detected');
+      console.error('✅ WEBHOOK: checkout.updated with status=succeeded detected');
     }
 
     // Handle multiple event types that indicate payment success
@@ -268,8 +271,13 @@ router.post('/webhook', async (req, res) => {
     // For benefit_grant.created, email is in data.customer.email
     // For checkout.updated, email is in data.customer_email
     const attributes = checkoutData?.attributes || checkoutData;
+    
+    // Priority order for email extraction:
+    // 1. payload.data.customer.email (for benefit_grant.created)
+    // 2. payload.data.customer_email (for checkout.updated)
+    // 3. Other fallbacks
     const email = 
-      payload?.data?.customer?.email || // For benefit_grant.created events
+      payload?.data?.customer?.email || // For benefit_grant.created events - HIGHEST PRIORITY
       payload?.data?.customer_email || // For checkout.updated events
       attributes?.customer_email || 
       attributes?.customer?.email ||
@@ -279,10 +287,10 @@ router.post('/webhook', async (req, res) => {
       payload?.data?.customer_email ||
       payload?.data?.attributes?.customer_email;
     
-    // For benefit_grant.created, checkout_id might be in order_id
+    // For benefit_grant.created, checkout_id is in order_id
     // For checkout.updated, checkout_id is in data.id
     const checkoutId = 
-      payload?.data?.order_id || // For benefit_grant.created events
+      payload?.data?.order_id || // For benefit_grant.created events - HIGHEST PRIORITY
       payload?.data?.id || // For checkout.updated events (checkout ID)
       checkoutData?.id || 
       checkoutData?.checkout_id || 
@@ -291,32 +299,58 @@ router.post('/webhook', async (req, res) => {
       payload?.checkout_id ||
       payload?.checkout_link_id;
 
-    console.log('📧 Extracted email:', email || 'not found');
-    console.log('🆔 Checkout ID:', checkoutId || 'not found');
+    // Log extracted values - use console.error for visibility in Vercel logs
+    console.error('📧 WEBHOOK EMAIL EXTRACTION:', email || 'NOT FOUND');
+    console.error('🆔 WEBHOOK CHECKOUT/ORDER ID:', checkoutId || 'NOT FOUND');
+    console.error('🔍 EMAIL EXTRACTION DEBUG:', JSON.stringify({
+      'payload.data.customer.email': payload?.data?.customer?.email,
+      'payload.data.customer_email': payload?.data?.customer_email,
+      'payload.data.order_id': payload?.data?.order_id,
+      'eventType': eventType,
+      'isSuccessEvent': successEvents.includes(eventType)
+    }));
 
     // Process events
     // Handle checkout.updated with succeeded status OR other success events
     if (isCheckoutSucceeded || successEvents.includes(eventType)) {
+      console.error(`💰 WEBHOOK: Processing payment success event: ${eventType}`);
       try {
         if (email) {
+          console.error(`🔄 WEBHOOK: Activating plan for email: ${email}, checkout/order ID: ${checkoutId || 'none'}`);
           await paywallService.activatePlan(email, checkoutId);
-          console.log('✅ Plan activated for:', email);
+          console.error('✅ WEBHOOK: Plan activated successfully for:', email);
+          
+          // Verify activation
+          const verifyStatus = await paywallService.getPlanStatus(email, false);
+          console.error('🔍 WEBHOOK: Verification - Plan status after activation:', verifyStatus.planStatus);
+          if (verifyStatus.planStatus !== 'active') {
+            console.error('❌ WEBHOOK CRITICAL: Plan activation may have failed! Status:', verifyStatus.planStatus);
+          } else {
+            console.error('✅ WEBHOOK: Plan activation verified - status is active');
+          }
         } else {
-          console.warn('⚠️  No email found in webhook payload');
+          console.error('⚠️  WEBHOOK: No email found in webhook payload');
+          console.error('📦 WEBHOOK: Full payload for debugging:', JSON.stringify(payload, null, 2));
+          
           // If we have checkout ID but no email, try to fetch from Polar API
           if (checkoutId) {
-            console.log('🔄 Attempting to fetch checkout details from Polar API...');
+            console.error('🔄 WEBHOOK: Attempting to fetch checkout details from Polar API using order_id:', checkoutId);
             const checkoutStatus = await paywallService.checkCheckoutStatusFromPolar(checkoutId);
+            console.error('📥 WEBHOOK: Checkout status from API:', JSON.stringify(checkoutStatus));
             if (checkoutStatus && checkoutStatus.email && checkoutStatus.isPaid) {
               await paywallService.activatePlan(checkoutStatus.email, checkoutId);
-              console.log('✅ Plan activated via API fetch for:', checkoutStatus.email);
+              console.error('✅ WEBHOOK: Plan activated via API fetch for:', checkoutStatus.email);
             } else {
-              console.warn('⚠️  Could not activate plan - email not found and checkout not paid');
+              console.error('⚠️  WEBHOOK: Could not activate plan - email not found and checkout not paid');
+              console.error('   WEBHOOK: Checkout status:', JSON.stringify(checkoutStatus));
             }
+          } else {
+            console.error('❌ WEBHOOK: Cannot activate plan - no email and no checkout/order ID');
           }
         }
       } catch (activationError) {
-        console.error('❌ Error activating plan:', activationError.message);
+        console.error('❌ WEBHOOK ERROR: Error activating plan:', activationError.message);
+        console.error('❌ WEBHOOK ERROR: Error stack:', activationError.stack);
         // Continue - don't throw, return 200 OK
       }
     } else if (failureEvents.includes(eventType)) {
@@ -324,14 +358,14 @@ router.post('/webhook', async (req, res) => {
         // Handle payment failures - don't update database, just log
         if (email) {
           await paywallService.markPaymentFailed(email, checkoutId, `Payment failed: ${eventType}`);
-          console.log('❌ Payment failed for:', email, '- Database not updated, user state preserved');
+          console.error('❌ WEBHOOK: Payment failed for:', email, '- Database not updated, user state preserved');
         } else if (checkoutId) {
           console.warn('⚠️  Payment failed but no email found. Checkout ID:', checkoutId);
           // Try to get email from checkout for logging purposes only
           const checkoutStatus = await paywallService.checkCheckoutStatusFromPolar(checkoutId);
           if (checkoutStatus && checkoutStatus.email) {
             await paywallService.markPaymentFailed(checkoutStatus.email, checkoutId, `Payment failed: ${eventType}`);
-            console.log('❌ Payment failed for:', checkoutStatus.email, '- Database not updated, user state preserved');
+            console.error('❌ WEBHOOK: Payment failed for:', checkoutStatus.email, '- Database not updated, user state preserved');
           }
         }
       } catch (failureError) {
@@ -339,10 +373,10 @@ router.post('/webhook', async (req, res) => {
         // Continue - don't throw, return 200 OK
       }
     } else {
-      console.log('ℹ️  Event type not handled:', eventType);
+      console.error('ℹ️  WEBHOOK: Event type not handled:', eventType);
       // For unknown event types, log the full payload for debugging
       if (eventType && (eventType.includes('checkout') || eventType.includes('payment'))) {
-        console.log('⚠️  Unhandled checkout/payment event, full payload:', JSON.stringify(payload, null, 2));
+        console.error('⚠️  WEBHOOK: Unhandled checkout/payment event, full payload:', JSON.stringify(payload, null, 2));
       }
     }
 
