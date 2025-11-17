@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Event Conflict Finder</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <!-- Custom CSS for overrides -->
+    <link rel="stylesheet" href="/css/style.css">
+</head>
+<body class="bg-gray-50 min-h-screen">
+    <div class="container mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-8">
+        <header class="text-center mb-12">
+            <h1 class="text-4xl md:text-5xl lg:text-6xl font-light text-gray-900 mb-4 tracking-tight">Event Conflict Finder</h1>
+            <p class="text-lg md:text-xl text-gray-600 font-light max-w-2xl mx-auto">Discover scheduling conflicts across multiple ticketing platforms</p>
+        </header>
+
+        <main>
+            <div class="bg-white rounded-none border border-gray-200 p-8 mb-8">
+                <div class="search-controls">
+                    <h2 class="text-xl font-light text-gray-900 mb-8 tracking-wide">Search Events</h2>
+                    <div class="grid grid-cols-1 md:grid-cols-[2fr_1fr_1fr_auto_auto] gap-6 items-end">
+                        <div class="input-group">
+                            <label for="location" class="block text-xs font-normal text-gray-500 mb-3 uppercase tracking-wider">Location</label>
+                            <div class="location-input-wrapper relative z-[10001]">
+                                <input type="text" id="location" placeholder="Enter city name" autocomplete="off" 
+                                       class="w-full px-0 py-3 border-0 border-b border-gray-300 rounded-none focus:outline-none focus:border-gray-900 transition-colors text-base bg-transparent placeholder-gray-400">
+                                <div id="location-suggestions" class="location-suggestions"></div>
+                            </div>
+                        </div>
+                        <div class="input-group">
+                            <label for="radius" class="block text-xs font-normal text-gray-500 mb-3 uppercase tracking-wider">Search Radius (miles)</label>
+                            <input type="number" id="radius" value="25" min="1" max="100" 
+                                   class="w-full px-0 py-3 border-0 border-b border-gray-300 rounded-none focus:outline-none focus:border-gray-900 transition-colors text-base bg-transparent">
+                        </div>
+                        <div class="input-group">
+                            <label for="timeBuffer" class="block text-xs font-normal text-gray-500 mb-3 uppercase tracking-wider">Time Buffer (minutes)</label>
+                            <input type="number" id="timeBuffer" value="30" min="0" max="120" 
+                                   class="w-full px-0 py-3 border-0 border-b border-gray-300 rounded-none focus:outline-none focus:border-gray-900 transition-colors text-base bg-transparent">
+                        </div>
+                        <div class="input-group flex flex-col justify-end">
+                            <label class="block text-xs font-normal text-gray-500 mb-3 uppercase tracking-wider">Theme</label>
+                            <label class="theme-switch-wrapper">
+                                <input type="checkbox" id="theme-toggle" class="theme-switch-input" aria-label="Toggle map theme">
+                                <div id="theme-toggle-track" class="theme-switch-track" data-theme="light">
+                                    <span class="theme-switch-icon sun" aria-hidden="true">
+                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                                            <circle cx="12" cy="12" r="4"></circle>
+                                            <line x1="12" y1="2" x2="12" y2="5"></line>
+                                            <line x1="12" y1="19" x2="12" y2="22"></line>
+                                            <line x1="4.22" y1="4.22" x2="6.34" y2="6.34"></line>
+                                            <line x1="17.66" y1="17.66" x2="19.78" y2="19.78"></line>
+                                            <line x1="2" y1="12" x2="5" y2="12"></line>
+                                            <line x1="19" y1="12" x2="22" y2="12"></line>
+                                            <line x1="4.22" y1="19.78" x2="6.34" y2="17.66"></line>
+                                            <line x1="17.66" y1="6.34" x2="19.78" y2="4.22"></line>
+                                        </svg>
+                                    </span>
+                                    <span class="theme-switch-icon moon" aria-hidden="true">
+                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                                            <path d="M21 12.79A9 9 0 0 1 11.21 3 7 7 0 1 0 21 12.79z"></path>
+                                        </svg>
+                                    </span>
+                                    <div class="theme-switch-thumb"></div>
+                                </div>
+                            </label>
+                        </div>
+                        <div class="input-group flex flex-col justify-end">
+                            <label class="block text-xs font-normal text-gray-500 mb-3 uppercase tracking-wider invisible">Search</label>
+                            <button id="search-btn" class="bg-gray-900 text-white font-light px-8 py-3 rounded-none hover:bg-gray-800 transition-all duration-200 whitespace-nowrap min-w-[140px] tracking-wide uppercase text-xs">
+                                Search
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 lg:grid-cols-[2fr_1fr] gap-8">
+                <div class="map-section bg-white border border-gray-200 overflow-hidden">
+                    <div id="map" class="w-full h-[600px]"></div>
+                </div>
+                
+                <div class="flex flex-col gap-8">
+                    <div class="bg-white border border-gray-200 p-6 max-h-[290px] overflow-y-auto rounded-sm shadow-sm">
+                        <h3 class="text-sm font-medium text-gray-900 mb-4 uppercase tracking-wider">Events Found</h3>
+                        <div id="events-count" class="text-3xl font-light text-gray-900 mb-6 text-center">0</div>
+                        <div id="events-list" class="events-list flex flex-col gap-4"></div>
+                    </div>
+                    
+                    <div class="bg-white border border-gray-200 p-6 max-h-[290px] overflow-y-auto rounded-sm shadow-sm">
+                        <h3 id="conflict-panel-title" class="text-sm font-medium text-gray-900 mb-4 uppercase tracking-wider">Conflicts Detected</h3>
+                        <div id="conflict-count" class="text-3xl font-light text-gray-900 mb-6 text-center">0</div>
+                        <div id="conflict-list" class="conflict-list flex flex-col gap-4"></div>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <footer class="text-center mt-16 py-8 border-t border-gray-200">
+            <p class="text-sm text-gray-500 font-light">Event Conflict Finder - Phase 1</p>
+        </footer>
+    </div>
+
+    <!-- Unsupported Country Modal -->
+    <div id="unsupported-country-modal" class="hidden fixed inset-0 z-[99999] flex items-center justify-center bg-black/40">
+        <div class="bg-white border border-gray-200 w-[90%] max-w-md overflow-hidden">
+            <div class="bg-gray-900 text-white px-8 py-6 flex justify-between items-center">
+                <h2 class="text-lg font-light uppercase tracking-wider">Coverage Not Available</h2>
+                <button class="modal-close text-white hover:text-gray-300 w-8 h-8 flex items-center justify-center transition-all duration-200" id="modal-close-btn">&times;</button>
+            </div>
+            <div class="modal-body px-8 py-10 text-center">
+                <p class="text-base text-gray-700 mb-6 font-light leading-relaxed">
+                    The current application does not cover <strong id="modal-country-name" class="text-gray-900 font-normal">this location</strong>.
+                </p>
+                <p class="text-sm text-gray-500 mb-8 font-light">
+                    We will be expanding soon!
+                </p>
+                <div class="bg-gray-50 border border-gray-200 p-6 text-left">
+                    <p class="text-xs font-light text-gray-500 uppercase tracking-wider mb-3">Currently supported</p>
+                    <p class="text-sm text-gray-700 font-light leading-relaxed">United States, Canada, United Kingdom, Australia, New Zealand, and most European countries.</p>
+                </div>
+            </div>
+            <div class="modal-footer bg-white px-8 py-6 flex justify-center border-t border-gray-200">
+                <button class="bg-gray-900 text-white font-light px-10 py-3 rounded-none hover:bg-gray-800 transition-all duration-200 uppercase text-xs tracking-wider" id="modal-ok-btn">Got it</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="/js/app.js"></script>
+</body>
+</html>
+

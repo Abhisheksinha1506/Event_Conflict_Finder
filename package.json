@@ -1,0 +1,28 @@
+{
+  "name": "event-conflict-finder",
+  "version": "1.0.0",
+  "description": "Event Conflict Finder - Identifies scheduling conflicts across multiple ticketing platforms",
+  "main": "src/app.js",
+  "scripts": {
+    "start": "node src/app.js",
+    "dev": "nodemon src/app.js"
+  },
+  "keywords": [
+    "events",
+    "conflict-detection",
+    "ticketing",
+    "scheduling"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "node-fetch": "^2.7.0",
+    "redis": "^4.6.12"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  }
+}

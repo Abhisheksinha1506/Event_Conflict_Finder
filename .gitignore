@@ -1,0 +1,50 @@
+# Dependencies
+node_modules/
+package-lock.json
+
+# Environment variables (NEVER commit these!)
+.env
+.env.local
+.env.*.local
+
+# Keep .env.example as a template
+!.env.example
+
+# Build outputs
+dist/
+build/
+*.log
+logs/
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.sublime-project
+*.sublime-workspace
+
+# Test files
+coverage/
+.nyc_output/
+test-results/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# API test results (may contain sensitive info)
+API_TEST_RESULTS.md
+API_STATUS_CHECK.md
+
