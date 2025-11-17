@@ -250,7 +250,9 @@ The application now supports a freemium flow with Supabase for entitlement stora
 | `SUPABASE_PLAN_TABLE` | Optional. Defaults to `user_plans` |
 | `FREE_SEARCH_LIMIT` | Optional. Defaults to `3` |
 | `POLAR_API_KEY` | Polar API key for checkout creation |
-| `POLAR_PRODUCT_ID` | Polar product identifier for the unlimited plan |
+| `POLAR_PRODUCT_ID` | Polar product identifier for the unlimited plan (optional if `POLAR_PRODUCT_PRICE_ID` is set) |
+| `POLAR_PRODUCT_PRICE_ID` | Polar product price ID (preferred when using product pricing) |
+| `POLAR_PAYMENT_PROCESSOR` | Payment processor label (e.g. `stripe`) required by Polar |
 | `POLAR_SUCCESS_URL` / `POLAR_CANCEL_URL` | Optional overrides for redirect URLs |
 | `POLAR_WEBHOOK_SECRET` | Secret used to validate Polar webhook payloads |
 | `FRONTEND_URL` | Public URL for success redirect fallbacks |
@@ -273,7 +275,7 @@ The backend uses the Supabase service role key to insert/update plan records ser
 
 ### Polar Checkout
 
-1. Create a Polar product representing the unlimited plan and capture its `POLAR_PRODUCT_ID`.
+1. Create a Polar product (and price) representing the unlimited plan and capture its `POLAR_PRODUCT_ID` / `POLAR_PRODUCT_PRICE_ID`.
 2. Configure a hosted checkout link with success/cancel URLs pointing back to your deployment (e.g. `https://example.com?payment=success`).
 3. Create a webhook in Polar pointing to `/api/paywall/webhook` and reuse the `POLAR_WEBHOOK_SECRET`.
 

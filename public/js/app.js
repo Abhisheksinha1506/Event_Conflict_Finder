@@ -1,3 +1,32 @@
+// Suppress expected third-party analytics errors blocked by ad blockers
+(function() {
+  const blockedDomains = [
+    'polar.sh',
+    'r.stripe.com',
+    'play.google.com'
+  ];
+  
+  const originalError = console.error;
+  const originalWarn = console.warn;
+  
+  console.error = function(...args) {
+    const message = args.join(' ');
+    if (blockedDomains.some(domain => message.includes(domain) && message.includes('ERR_BLOCKED_BY_CLIENT'))) {
+      return; // Suppress blocked third-party analytics errors
+    }
+    originalError.apply(console, args);
+  };
+  
+  // Also catch unhandled promise rejections from blocked requests
+  window.addEventListener('unhandledrejection', function(event) {
+    const reason = event.reason?.message || event.reason?.toString() || '';
+    if (blockedDomains.some(domain => reason.includes(domain) && (reason.includes('Failed to fetch') || reason.includes('ERR_BLOCKED_BY_CLIENT')))) {
+      event.preventDefault(); // Suppress console error
+      return;
+    }
+  });
+})();
+
 class EventConflictFinder {
   constructor() {
     this.map = null;
@@ -19,6 +48,13 @@ class EventConflictFinder {
     this.lastSearchRadius = null; // Track last search radius to detect significant changes
     this.isSelectionUpdate = false; // Prevent map events triggered by selection from refetching
     this.performanceLoggingEnabled = this.shouldLogPerformance();
+    this.suggestionCache = new Map();
+    this.popularSuggestionPool = [];
+    this.defaultSuggestionLimit = 5;
+    this.typingSpeedThresholdMs = 180;
+    this.fastTypingDebounceMs = 120;
+    this.normalSuggestionDebounceMs = 300;
+    this.lastSuggestionInputTime = 0;
     this.paywallState = this.loadPaywallState();
     this.freeSearchLimit = this.paywallState.freeSearchLimit;
     this.freeSearchCount = this.paywallState.freeSearchCount;
@@ -81,7 +117,10 @@ class EventConflictFinder {
     this.initMap();
     this.setupEventListeners();
     this.setupPaywallModal();
+    await this.prefetchPopularLocations();
     this.checkPostCheckoutStatus();
+    // Verify stored payment status with server on page load
+    await this.verifyStoredPaymentStatus();
   }
 
   initMap() {
@@ -272,9 +311,16 @@ class EventConflictFinder {
     const locationInput = document.getElementById('location');
     const suggestionsContainer = document.getElementById('location-suggestions');
     
-    // Handle input changes with debouncing
+    // Handle input changes with adaptive debouncing
     locationInput.addEventListener('input', (e) => {
       const query = e.target.value.trim();
+      
+      const now = Date.now();
+      const delta = now - (this.lastSuggestionInputTime || 0);
+      this.lastSuggestionInputTime = now;
+      const debounceDelay = delta > 0 && delta < this.typingSpeedThresholdMs
+        ? this.fastTypingDebounceMs
+        : this.normalSuggestionDebounceMs;
       
       // Cancel any pending API request
       if (this.currentFetchController) {
@@ -285,16 +331,9 @@ class EventConflictFinder {
       // Clear any pending timeout
       clearTimeout(this.suggestionTimeout);
       
-      // If input is empty or too short, hide suggestions immediately and clear everything
+      // If input is empty or too short, rely on prefetched suggestions
       if (query.length < 2) {
-        this.hideSuggestions();
-        this.locationSuggestions = []; // Clear stored suggestions
-        this.selectedSuggestionIndex = -1;
-        // Clear the suggestions container HTML to prevent stale display
-        const suggestionsContainer = document.getElementById('location-suggestions');
-        if (suggestionsContainer) {
-          suggestionsContainer.innerHTML = '';
-        }
+        this.showPrefetchedSuggestions(query);
         return;
       }
       
@@ -305,14 +344,9 @@ class EventConflictFinder {
         if (currentQuery.length >= 2 && currentQuery === query) {
           this.fetchLocationSuggestions(currentQuery);
         } else {
-          this.hideSuggestions();
-          this.locationSuggestions = [];
-          const suggestionsContainer = document.getElementById('location-suggestions');
-          if (suggestionsContainer) {
-            suggestionsContainer.innerHTML = '';
-          }
+          this.showPrefetchedSuggestions(currentQuery);
         }
-      }, 300); // 300ms debounce
+      }, debounceDelay);
     });
 
     // Handle keyboard navigation
@@ -1948,6 +1982,14 @@ class EventConflictFinder {
     
     // Normalize the query to handle typos
     const normalizedQuery = this.normalizeLocationInput(trimmedQuery);
+    const cacheKey = normalizedQuery.toLowerCase();
+
+    if (this.suggestionCache.has(cacheKey)) {
+      this.locationSuggestions = this.suggestionCache.get(cacheKey);
+      this.selectedSuggestionIndex = -1;
+      this.displaySuggestions();
+      return;
+    }
     
     // Cancel any previous request
     if (this.currentFetchController) {
@@ -1959,22 +2001,7 @@ class EventConflictFinder {
     const signal = this.currentFetchController.signal;
     
     try {
-      // Use OpenStreetMap Nominatim API for autocomplete
-      const encodedQuery = encodeURIComponent(normalizedQuery);
-      const url = `https://nominatim.openstreetmap.org/search?q=${encodedQuery}&format=json&limit=5&addressdetails=1`;
-      
-      const response = await fetch(url, {
-        headers: {
-          'User-Agent': 'EventConflictFinder/1.0'
-        },
-        signal: signal // Add abort signal
-      });
-
-      if (!response.ok) {
-        throw new Error(`Geocoding API error: ${response.status}`);
-      }
-
-      const data = await response.json();
+      const data = await this.requestLocationSuggestions(normalizedQuery, signal);
       
       // Check if request was aborted
       if (signal.aborted) {
@@ -1998,6 +2025,7 @@ class EventConflictFinder {
       
       // Only update if we got valid results
       if (Array.isArray(data) && data.length > 0) {
+        this.suggestionCache.set(cacheKey, data);
         this.locationSuggestions = data;
         this.selectedSuggestionIndex = -1;
         this.displaySuggestions();
@@ -2006,11 +2034,9 @@ class EventConflictFinder {
         this.locationSuggestions = [];
       }
     } catch (error) {
-      // Ignore abort errors
-      if (error.name === 'AbortError') {
-        return;
+      if (error.name !== 'AbortError') {
+        console.error('Error fetching location suggestions:', error);
       }
-      console.error('Error fetching location suggestions:', error);
       this.hideSuggestions();
       this.locationSuggestions = [];
       const suggestionsContainer = document.getElementById('location-suggestions');
@@ -2018,20 +2044,22 @@ class EventConflictFinder {
         suggestionsContainer.innerHTML = '';
       }
     } finally {
-      // Clear the controller if this request completed
-      if (this.currentFetchController && !this.currentFetchController.signal.aborted) {
-        this.currentFetchController = null;
-      }
+      this.currentFetchController = null;
     }
   }
 
-  displaySuggestions() {
+  displaySuggestions(allowShortInput = false) {
     const suggestionsContainer = document.getElementById('location-suggestions');
     const locationInput = document.getElementById('location');
     const currentInput = locationInput.value.trim();
     
     // Don't show suggestions if input is empty or too short
-    if (!currentInput || currentInput.length < 2) {
+    if (!currentInput && !allowShortInput) {
+      this.hideSuggestions();
+      return;
+    }
+
+    if (currentInput.length < 2 && !allowShortInput) {
       this.hideSuggestions();
       return;
     }
@@ -2166,6 +2194,95 @@ class EventConflictFinder {
     
     // Focus back on input
     locationInput.focus();
+  }
+
+  async requestLocationSuggestions(query, signal) {
+    const encodedQuery = encodeURIComponent(query);
+    const url = `https://nominatim.openstreetmap.org/search?q=${encodedQuery}&format=json&limit=${this.defaultSuggestionLimit}&addressdetails=1`;
+
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': 'EventConflictFinder/1.0'
+      },
+      signal
+    });
+
+    if (!response.ok) {
+      throw new Error(`Geocoding API error: ${response.status}`);
+    }
+
+    return await response.json();
+  }
+
+  async prefetchPopularLocations() {
+    const popularQueries = [
+      'New York',
+      'Los Angeles',
+      'London',
+      'Toronto',
+      'Sydney',
+      'Chicago',
+      'Paris',
+      'Berlin'
+    ];
+
+    const aggregated = [];
+    await Promise.all(popularQueries.map(async city => {
+      const cacheKey = city.toLowerCase();
+      if (this.suggestionCache.has(cacheKey)) {
+        aggregated.push(...this.suggestionCache.get(cacheKey).slice(0, 1));
+        return;
+      }
+
+      try {
+        const data = await this.requestLocationSuggestions(city);
+        if (Array.isArray(data) && data.length > 0) {
+          this.suggestionCache.set(cacheKey, data);
+          aggregated.push(data[0]);
+        }
+      } catch (error) {
+        console.warn(`Prefetch failed for ${city}:`, error.message);
+      }
+    }));
+
+    if (aggregated.length > 0) {
+      const unique = [];
+      const seen = new Set();
+      aggregated.forEach(item => {
+        const label = item.display_name || item.name;
+        if (label && !seen.has(label)) {
+          seen.add(label);
+          unique.push(item);
+        }
+      });
+      this.popularSuggestionPool = unique.slice(0, this.defaultSuggestionLimit);
+    }
+  }
+
+  showPrefetchedSuggestions(partial = '') {
+    const normalized = (partial || '').toLowerCase();
+    let pool = this.popularSuggestionPool || [];
+
+    if (pool.length === 0) {
+      this.hideSuggestions();
+      this.locationSuggestions = [];
+      this.selectedSuggestionIndex = -1;
+      return;
+    }
+
+    if (normalized.length > 0) {
+      pool = pool.filter(item => (item.display_name || item.name || '')
+        .toLowerCase()
+        .startsWith(normalized));
+    }
+
+    this.locationSuggestions = pool.slice(0, this.defaultSuggestionLimit);
+    if (this.locationSuggestions.length > 0) {
+      this.selectedSuggestionIndex = -1;
+      this.displaySuggestions(true);
+    } else {
+      this.hideSuggestions();
+    }
   }
 
   async handleMapClick(latlng) {
@@ -2449,10 +2566,12 @@ class EventConflictFinder {
   }
 
   canProceedWithSearch() {
+    // If user has unlimited access (stored or verified), always allow
     if (this.hasUnlimitedAccess) {
       return true;
     }
 
+    // Otherwise check free search limit
     return this.freeSearchCount < this.freeSearchLimit;
   }
 
@@ -2578,6 +2697,8 @@ class EventConflictFinder {
         });
         this.showToast('Now you can continue searching. Next time, just enter your email to continue.', 'success');
         this.hidePaywallModal();
+        // Refresh the page state to ensure unlimited access is recognized
+        this.hasUnlimitedAccess = true;
       } else {
         this.setPaywallMessage('No active plan found for this email. Purchase the unlimited plan to continue.', 'error');
       }
@@ -2686,15 +2807,82 @@ class EventConflictFinder {
           freeSearchCount: 0
         });
         this.showToast('Payment received. Now you can continue searching! Next time, just enter your email to continue.', 'success');
+        
+        // Clean up URL parameters - remove payment-related params
         params.delete('payment');
+        params.delete('customer_session_token'); // Remove Polar session token
         if (params.has('email')) {
           params.delete('email');
         }
+        
+        // Remove any other Polar-related parameters that might be present
+        const polarParams = ['session_id', 'checkout_id', 'payment_intent'];
+        polarParams.forEach(param => {
+          if (params.has(param)) {
+            params.delete(param);
+          }
+        });
+        
         const newUrl = `${window.location.pathname}${params.toString() ? `?${params.toString()}` : ''}`;
         window.history.replaceState({}, document.title, newUrl);
+      } else {
+        // Even if payment status is not 'success', clean up any Polar tokens that might be present
+        let cleaned = false;
+        
+        if (params.has('customer_session_token')) {
+          params.delete('customer_session_token');
+          cleaned = true;
+        }
+        
+        const polarParams = ['session_id', 'checkout_id', 'payment_intent'];
+        polarParams.forEach(param => {
+          if (params.has(param)) {
+            params.delete(param);
+            cleaned = true;
+          }
+        });
+        
+        if (cleaned) {
+          const newUrl = `${window.location.pathname}${params.toString() ? `?${params.toString()}` : ''}`;
+          window.history.replaceState({}, document.title, newUrl);
+        }
       }
     } catch (error) {
       console.warn('Unable to process checkout status:', error);
+    }
+  }
+
+  async verifyStoredPaymentStatus() {
+    // Only verify if we have a stored email and unlimited access flag
+    if (!this.userEmail || !this.hasUnlimitedAccess) {
+      return;
+    }
+
+    try {
+      // Silently verify with server that the plan is still active
+      const status = await this.verifyPlanForEmail(this.userEmail);
+      
+      if (status.planStatus === 'active') {
+        // Plan is confirmed active, ensure state is correct
+        this.persistPaywallState({
+          email: this.userEmail,
+          unlimitedAccess: true,
+          freeSearchCount: 0
+        });
+      } else {
+        // Plan is not active, reset state
+        console.warn('Stored payment status invalid, resetting paywall state');
+        this.persistPaywallState({
+          email: this.userEmail,
+          unlimitedAccess: false,
+          freeSearchCount: status.searchCount || this.freeSearchCount
+        });
+      }
+    } catch (error) {
+      // If verification fails, don't reset state (might be network issue)
+      // Keep unlimited access if it was previously verified
+      // This prevents blocking users due to temporary network issues
+      console.warn('Unable to verify stored payment status (network issue?), keeping current state:', error);
     }
   }
 

@@ -6,6 +6,7 @@ const rateLimiter = require('../utils/rateLimiter');
 const cacheManager = require('../utils/cacheManager');
 const monitoring = require('../utils/monitoring');
 const paywallService = require('../utils/paywallService');
+const freeSearchLimiter = require('../utils/freeSearchLimiter');
 
 // Track pending requests for deduplication (same location queries)
 const pendingRequests = new Map();
@@ -79,11 +80,13 @@ router.get('/search', async (req, res) => {
     }
 
     // Get user identifier for rate limiting
-    const userId = rateLimiter.getUserIdentifier(req);
+    const userId = rateLimiter.getUserIdentifier(req) || req.ip || req.headers['x-forwarded-for'] || 'anonymous';
     const userEmail = (req.headers['x-user-email'] || '').toString().toLowerCase().trim();
     let paywallOutcome = null;
+    const shouldUseSupabase = !!(userEmail && !paywallService.paywallUnavailable());
+    const fallbackLimiterKey = userEmail ? `user:${userEmail}` : `ip:${userId}`;
 
-    if (userEmail && !paywallService.paywallUnavailable()) {
+    if (shouldUseSupabase) {
       try {
         paywallOutcome = await paywallService.recordSearchUsage(userEmail);
         if (!paywallOutcome.allowed) {
@@ -100,6 +103,17 @@ router.get('/search', async (req, res) => {
         return res.status(500).json({
           error: 'PAYWALL_ENFORCEMENT_FAILED',
           message: 'Unable to verify subscription status. Please try again later.'
+        });
+      }
+    } else {
+      paywallOutcome = freeSearchLimiter.recordSearch(fallbackLimiterKey);
+      if (!paywallOutcome.allowed) {
+        return res.status(402).json({
+          error: 'PAYWALL_LIMIT_REACHED',
+          message: 'Free searches exhausted. Purchase the unlimited plan to continue.',
+          planStatus: paywallOutcome.planStatus,
+          searchCount: paywallOutcome.searchCount,
+          freeSearchLimit: paywallOutcome.freeSearchLimit || paywallService.FREE_SEARCH_LIMIT
         });
       }
     }
