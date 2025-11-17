@@ -30,7 +30,8 @@ router.post('/status', async (req, res) => {
       return res.status(400).json({ error: 'Email is required' });
     }
 
-    const status = await paywallService.getPlanStatus(email);
+    // Auto-verify pending payments when checking status
+    const status = await paywallService.getPlanStatus(email, true);
     res.json({
       ...status,
       paywallEnabled: paywallConfigured(),

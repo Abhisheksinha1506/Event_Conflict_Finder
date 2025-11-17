@@ -118,7 +118,7 @@ class EventConflictFinder {
     this.setupEventListeners();
     this.setupPaywallModal();
     await this.prefetchPopularLocations();
-    this.checkPostCheckoutStatus();
+    await this.checkPostCheckoutStatus();
     // Verify stored payment status with server on page load
     await this.verifyStoredPaymentStatus();
   }
@@ -2689,6 +2689,7 @@ class EventConflictFinder {
     try {
       this.setPaywallMessage('Checking your plan...', 'info');
       const status = await this.verifyPlanForEmail(email);
+      
       if (status.planStatus === 'active') {
         this.persistPaywallState({
           email,
@@ -2699,6 +2700,10 @@ class EventConflictFinder {
         this.hidePaywallModal();
         // Refresh the page state to ensure unlimited access is recognized
         this.hasUnlimitedAccess = true;
+      } else if (status.planStatus === 'pending') {
+        // Payment is pending - server should have checked Polar API automatically
+        // If still pending, payment might still be processing
+        this.setPaywallMessage('Payment is still being processed. Please wait a moment and try again, or contact support if this persists.', 'warning');
       } else {
         this.setPaywallMessage('No active plan found for this email. Purchase the unlimited plan to continue.', 'error');
       }
@@ -2794,19 +2799,50 @@ class EventConflictFinder {
     }
   }
 
-  checkPostCheckoutStatus() {
+  async checkPostCheckoutStatus() {
     try {
       const params = new URLSearchParams(window.location.search);
       const paymentStatus = params.get('payment');
 
       if (paymentStatus === 'success') {
         const email = params.get('email') || this.userEmail;
-        this.persistPaywallState({
-          email: email || this.userEmail,
-          unlimitedAccess: true,
-          freeSearchCount: 0
-        });
-        this.showToast('Payment received. Now you can continue searching! Next time, just enter your email to continue.', 'success');
+        
+        // Verify payment status with server (will auto-check Polar API if pending)
+        try {
+          const status = await this.verifyPlanForEmail(email || this.userEmail);
+          if (status.planStatus === 'active') {
+            this.persistPaywallState({
+              email: email || this.userEmail,
+              unlimitedAccess: true,
+              freeSearchCount: 0
+            });
+            this.showToast('Payment received. Now you can continue searching! Next time, just enter your email to continue.', 'success');
+          } else if (status.planStatus === 'pending') {
+            // Payment is still processing, show appropriate message
+            this.persistPaywallState({
+              email: email || this.userEmail,
+              unlimitedAccess: false,
+              freeSearchCount: status.searchCount || 0
+            });
+            this.showToast('Payment is being processed. Please wait a moment and refresh the page.', 'info');
+          } else {
+            this.persistPaywallState({
+              email: email || this.userEmail,
+              unlimitedAccess: false,
+              freeSearchCount: status.searchCount || 0
+            });
+            this.showToast('Payment verification in progress. Please try again in a moment.', 'info');
+          }
+        } catch (error) {
+          console.error('Error verifying payment status:', error);
+          // Fallback: assume payment succeeded if we got success redirect
+          this.persistPaywallState({
+            email: email || this.userEmail,
+            unlimitedAccess: true,
+            freeSearchCount: 0
+          });
+          this.showToast('Payment received. Now you can continue searching! Next time, just enter your email to continue.', 'success');
+        }
         
         // Clean up URL parameters - remove payment-related params
         params.delete('payment');
@@ -2853,13 +2889,13 @@ class EventConflictFinder {
   }
 
   async verifyStoredPaymentStatus() {
-    // Only verify if we have a stored email and unlimited access flag
-    if (!this.userEmail || !this.hasUnlimitedAccess) {
+    // Verify if we have a stored email
+    if (!this.userEmail) {
       return;
     }
 
     try {
-      // Silently verify with server that the plan is still active
+      // Verify with server - this will auto-check pending payments and update status
       const status = await this.verifyPlanForEmail(this.userEmail);
       
       if (status.planStatus === 'active') {
@@ -2868,6 +2904,15 @@ class EventConflictFinder {
           email: this.userEmail,
           unlimitedAccess: true,
           freeSearchCount: 0
+        });
+      } else if (status.planStatus === 'pending') {
+        // Status is still pending - server will check Polar API automatically
+        // Keep current state but don't grant unlimited access yet
+        console.log('Payment status is pending, waiting for confirmation...');
+        this.persistPaywallState({
+          email: this.userEmail,
+          unlimitedAccess: false,
+          freeSearchCount: status.searchCount || this.freeSearchCount
         });
       } else {
         // Plan is not active, reset state
