@@ -501,16 +501,12 @@ class EventConflictFinder {
       // Normalize common typos and variations
       const normalizedLocation = this.normalizeLocationInput(location);
       
-      // Use OpenStreetMap Nominatim API for geocoding (free, no API key required)
+      // Use Photon API for geocoding (replaces Nominatim, works from India/Vercel)
       const encodedLocation = encodeURIComponent(normalizedLocation);
       // Request more results to find the best match from supported countries
-      const url = `https://nominatim.openstreetmap.org/search?q=${encodedLocation}&format=json&limit=20&addressdetails=1`;
+      const url = `https://photon.komoot.io/api/?q=${encodedLocation}&limit=20`;
       
-      const response = await fetch(url, {
-        headers: {
-          'User-Agent': 'EventConflictFinder/1.0' // Required by Nominatim
-        }
-      });
+      const response = await fetch(url);
 
       if (!response.ok) {
         throw new Error(`Geocoding API error: ${response.status}`);
@@ -518,7 +514,7 @@ class EventConflictFinder {
 
       const data = await response.json();
       
-      if (data && data.length > 0) {
+      if (data && data.features && data.features.length > 0) {
         // Prefer more specific results (city > town > village > state > country)
         // Priority order: city > town > village > municipality > county > state > country
         const priorityOrder = {
@@ -535,48 +531,62 @@ class EventConflictFinder {
         const supportedResults = [];
         const unsupportedResults = [];
 
-        for (const result of data) {
-          const country = result.address?.country;
-          const countryCode = result.address?.country_code?.toUpperCase();
+        for (const feature of data.features) {
+          const props = feature.properties || {};
+          const country = props.country || null;
+          const countryCode = props.countrycode?.toUpperCase() || null;
           const isSupported = this.isCountrySupported(country, countryCode);
           
           if (isSupported) {
-            supportedResults.push(result);
+            supportedResults.push(feature);
           } else {
-            unsupportedResults.push(result);
+            unsupportedResults.push(feature);
           }
         }
 
         // Prefer results from supported countries
-        const candidates = supportedResults.length > 0 ? supportedResults : data;
+        const candidates = supportedResults.length > 0 ? supportedResults : data.features;
         
         // Find the most specific result from candidates
         let bestResult = candidates[0];
         let bestPriority = 99;
 
-        for (const result of candidates) {
-          // Use addresstype to determine location specificity (city, state, etc.)
-          const placeType = result.addresstype;
+        for (const feature of candidates) {
+          const props = feature.properties || {};
+          // Photon uses 'type' field: 'city', 'town', 'village', etc.
+          const placeType = props.type || props.osm_type;
           const priority = placeType ? (priorityOrder[placeType] || 99) : 99;
           
-          // Prefer results with higher importance and lower priority (more specific)
-          if (priority < bestPriority || 
-              (priority === bestPriority && result.importance > bestResult.importance)) {
-            bestResult = result;
+          // Prefer results with lower priority (more specific)
+          if (priority < bestPriority) {
+            bestResult = feature;
             bestPriority = priority;
           }
         }
 
-        // Extract country information
-        const country = bestResult.address?.country || null;
-        const countryCode = bestResult.address?.country_code?.toUpperCase() || null;
+        // Extract country information from Photon response
+        const props = bestResult.properties || {};
+        const country = props.country || null;
+        const countryCode = props.countrycode?.toUpperCase() || null;
+        
+        // Photon returns coordinates as [lon, lat] in GeoJSON format
+        const coordinates = bestResult.geometry?.coordinates || [];
+        const lng = coordinates[0];
+        const lat = coordinates[1];
         
         return {
-          lat: parseFloat(bestResult.lat),
-          lng: parseFloat(bestResult.lon),
+          lat: parseFloat(lat),
+          lng: parseFloat(lng),
           country: country,
           countryCode: countryCode,
-          address: bestResult.address
+          address: {
+            country: country,
+            country_code: countryCode?.toLowerCase(),
+            state: props.state || null,
+            city: props.city || props.name || null,
+            // Map Photon properties to address format
+            ...props
+          }
         };
       } else {
         throw new Error('Location not found');
@@ -2198,20 +2208,57 @@ class EventConflictFinder {
 
   async requestLocationSuggestions(query, signal) {
     const encodedQuery = encodeURIComponent(query);
-    const url = `https://nominatim.openstreetmap.org/search?q=${encodedQuery}&format=json&limit=${this.defaultSuggestionLimit}&addressdetails=1`;
+    // Use Photon API (replaces Nominatim, works from India/Vercel)
+    const url = `https://photon.komoot.io/api/?q=${encodedQuery}&limit=${this.defaultSuggestionLimit}`;
 
-    const response = await fetch(url, {
-      headers: {
-        'User-Agent': 'EventConflictFinder/1.0'
-      },
-      signal
-    });
+    const response = await fetch(url, { signal });
 
     if (!response.ok) {
       throw new Error(`Geocoding API error: ${response.status}`);
     }
 
-    return await response.json();
+    const data = await response.json();
+    
+    // Transform Photon GeoJSON format to Nominatim-like format for compatibility
+    if (data && data.features) {
+      return data.features.map(feature => {
+        const props = feature.properties || {};
+        const coords = feature.geometry?.coordinates || [];
+        
+        // Build display name from Photon properties
+        const nameParts = [
+          props.name,
+          props.street,
+          props.city,
+          props.state,
+          props.country
+        ].filter(Boolean);
+        
+        const displayName = nameParts.join(', ');
+        
+        return {
+          display_name: displayName,
+          name: props.name || props.city || props.street || displayName,
+          lat: coords[1]?.toString(),
+          lon: coords[0]?.toString(),
+          address: {
+            country: props.country,
+            country_code: props.countrycode?.toLowerCase(),
+            state: props.state,
+            city: props.city,
+            town: props.city,
+            village: props.city,
+            street: props.street,
+            // Map Photon properties
+            ...props
+          },
+          // Preserve original Photon data for reference
+          _photon: feature
+        };
+      });
+    }
+    
+    return [];
   }
 
   async prefetchPopularLocations() {
@@ -2242,6 +2289,7 @@ class EventConflictFinder {
         }
       } catch (error) {
         console.warn(`Prefetch failed for ${city}:`, error.message);
+        // Continue with other cities even if one fails
       }
     }));
 
@@ -2363,36 +2411,56 @@ class EventConflictFinder {
 
   async reverseGeocode(lat, lng) {
     try {
-      const url = `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&addressdetails=1`;
+      // Use Photon reverse geocoding API (replaces Nominatim, works from India/Vercel)
+      const url = `https://photon.komoot.io/reverse?lat=${lat}&lon=${lng}`;
       
-      const response = await fetch(url, {
-        headers: {
-          'User-Agent': 'EventConflictFinder/1.0'
-        }
-      });
+      const response = await fetch(url);
 
       if (!response.ok) {
         return null;
       }
 
       const data = await response.json();
-      // Return a formatted location name with country info
-      const result = {
-        locationName: null,
-        country: data.address?.country || null,
-        countryCode: data.address?.country_code?.toUpperCase() || null,
-        address: data.address
-      };
       
-      if (data.address) {
-        const addr = data.address;
-        // Try to get city, town, or village name
-        result.locationName = addr.city || addr.town || addr.village || addr.county || (data.display_name ? data.display_name.split(',')[0] : null);
-      } else {
-        result.locationName = data.display_name ? data.display_name.split(',')[0] : null;
+      // Photon returns GeoJSON format
+      if (data && data.features && data.features.length > 0) {
+        const feature = data.features[0];
+        const props = feature.properties || {};
+        
+        // Build display name from Photon properties
+        const nameParts = [
+          props.name,
+          props.street,
+          props.city,
+          props.state,
+          props.country
+        ].filter(Boolean);
+        
+        const displayName = nameParts.join(', ');
+        
+        // Return a formatted location name with country info
+        const result = {
+          locationName: props.name || props.city || props.street || displayName.split(',')[0] || null,
+          country: props.country || null,
+          countryCode: props.countrycode?.toUpperCase() || null,
+          address: {
+            country: props.country,
+            country_code: props.countrycode?.toLowerCase(),
+            state: props.state,
+            city: props.city,
+            town: props.city,
+            village: props.city,
+            street: props.street,
+            // Map Photon properties
+            ...props
+          },
+          display_name: displayName
+        };
+        
+        return result;
       }
       
-      return result;
+      return null;
     } catch (error) {
       console.error('Reverse geocoding error:', error);
       return null;
@@ -2803,89 +2871,140 @@ class EventConflictFinder {
     try {
       const params = new URLSearchParams(window.location.search);
       const paymentStatus = params.get('payment');
+      const email = params.get('email') || this.userEmail;
 
-      if (paymentStatus === 'success') {
-        const email = params.get('email') || this.userEmail;
-        
+      if (paymentStatus === 'success' || paymentStatus === 'cancelled' || paymentStatus === 'failed') {
         // Verify payment status with server (will auto-check Polar API if pending)
         try {
           const status = await this.verifyPlanForEmail(email || this.userEmail);
+          
           if (status.planStatus === 'active') {
+            // Payment confirmed - update state and refresh
             this.persistPaywallState({
               email: email || this.userEmail,
               unlimitedAccess: true,
               freeSearchCount: 0
             });
-            this.showToast('Payment received. Now you can continue searching! Next time, just enter your email to continue.', 'success');
+            this.showToast('Payment confirmed! Refreshing page...', 'success');
+            
+            // Clean URL and refresh after short delay
+            setTimeout(() => {
+              window.location.href = window.location.pathname;
+            }, 1500);
+            return;
           } else if (status.planStatus === 'pending') {
-            // Payment is still processing, show appropriate message
+            // Payment is still processing - poll for status update
             this.persistPaywallState({
               email: email || this.userEmail,
               unlimitedAccess: false,
               freeSearchCount: status.searchCount || 0
             });
-            this.showToast('Payment is being processed. Please wait a moment and refresh the page.', 'info');
+            this.showToast('Payment is being processed. Checking status...', 'info');
+            
+            // Poll for payment status (check every 3 seconds, max 10 times)
+            this.pollPaymentStatus(email || this.userEmail, 10);
+            return;
           } else {
+            // Payment failed or not confirmed
             this.persistPaywallState({
               email: email || this.userEmail,
               unlimitedAccess: false,
               freeSearchCount: status.searchCount || 0
             });
-            this.showToast('Payment verification in progress. Please try again in a moment.', 'info');
+            
+            if (paymentStatus === 'cancelled') {
+              this.showToast('Payment was cancelled. Your search count remains unchanged. You can try again anytime.', 'info');
+            } else if (paymentStatus === 'failed') {
+              this.showToast('Payment failed. Your search count has not been reset. Please try again or contact support.', 'error');
+            } else {
+              this.showToast('Payment verification in progress. Please wait...', 'info');
+              // Poll for status update
+              this.pollPaymentStatus(email || this.userEmail, 10);
+            }
           }
         } catch (error) {
           console.error('Error verifying payment status:', error);
-          // Fallback: assume payment succeeded if we got success redirect
-          this.persistPaywallState({
-            email: email || this.userEmail,
-            unlimitedAccess: true,
-            freeSearchCount: 0
-          });
-          this.showToast('Payment received. Now you can continue searching! Next time, just enter your email to continue.', 'success');
-        }
-        
-        // Clean up URL parameters - remove payment-related params
-        params.delete('payment');
-        params.delete('customer_session_token'); // Remove Polar session token
-        if (params.has('email')) {
-          params.delete('email');
-        }
-        
-        // Remove any other Polar-related parameters that might be present
-        const polarParams = ['session_id', 'checkout_id', 'payment_intent'];
-        polarParams.forEach(param => {
-          if (params.has(param)) {
-            params.delete(param);
+          
+          if (paymentStatus === 'success') {
+            // If we got success redirect but verification failed, still refresh to let server handle it
+            this.showToast('Verifying payment... Refreshing page...', 'info');
+            setTimeout(() => {
+              window.location.href = window.location.pathname;
+            }, 1500);
+            return;
           }
-        });
-        
-        const newUrl = `${window.location.pathname}${params.toString() ? `?${params.toString()}` : ''}`;
-        window.history.replaceState({}, document.title, newUrl);
-      } else {
-        // Even if payment status is not 'success', clean up any Polar tokens that might be present
-        let cleaned = false;
-        
-        if (params.has('customer_session_token')) {
-          params.delete('customer_session_token');
-          cleaned = true;
-        }
-        
-        const polarParams = ['session_id', 'checkout_id', 'payment_intent'];
-        polarParams.forEach(param => {
-          if (params.has(param)) {
-            params.delete(param);
-            cleaned = true;
-          }
-        });
-        
-        if (cleaned) {
-          const newUrl = `${window.location.pathname}${params.toString() ? `?${params.toString()}` : ''}`;
-          window.history.replaceState({}, document.title, newUrl);
         }
       }
+      
+      // Clean up URL parameters - remove payment-related params
+      params.delete('payment');
+      params.delete('customer_session_token');
+      if (params.has('email')) {
+        params.delete('email');
+      }
+      
+      const polarParams = ['session_id', 'checkout_id', 'payment_intent', 'id'];
+      polarParams.forEach(param => {
+        if (params.has(param)) {
+          params.delete(param);
+        }
+      });
+      
+      const newUrl = `${window.location.pathname}${params.toString() ? `?${params.toString()}` : ''}`;
+      window.history.replaceState({}, document.title, newUrl);
     } catch (error) {
       console.warn('Unable to process checkout status:', error);
     }
+  }
+
+  async pollPaymentStatus(email, maxAttempts = 10) {
+    let attempts = 0;
+    
+    const poll = async () => {
+      if (attempts >= maxAttempts) {
+        this.showToast('Payment verification is taking longer than expected. Please refresh the page manually.', 'info');
+        return;
+      }
+      
+      attempts++;
+      
+      try {
+        const status = await this.verifyPlanForEmail(email);
+        
+        if (status.planStatus === 'active') {
+          // Payment confirmed - update state and refresh
+          this.persistPaywallState({
+            email: email,
+            unlimitedAccess: true,
+            freeSearchCount: 0
+          });
+          this.showToast('Payment confirmed! Refreshing page...', 'success');
+          
+          setTimeout(() => {
+            window.location.href = window.location.pathname;
+          }, 1500);
+          return;
+        } else if (status.planStatus === 'pending') {
+          // Still pending (legacy records only) - continue polling
+          setTimeout(poll, 3000); // Check every 3 seconds
+        } else {
+          // Payment failed or not confirmed - preserve search count
+          this.persistPaywallState({
+            email: email,
+            unlimitedAccess: false,
+            freeSearchCount: status.searchCount || 0 // Preserve current count, don't reset
+          });
+          this.showToast('Payment failed. Your search count has not been reset. Please try again.', 'error');
+        }
+      } catch (error) {
+        console.error('Error polling payment status:', error);
+        // Continue polling on error (might be temporary network issue)
+        setTimeout(poll, 3000);
+      }
+    };
+    
+    // Start polling after initial delay
+    setTimeout(poll, 3000);
   }
 
   async verifyStoredPaymentStatus() {

@@ -72,16 +72,27 @@ async function recordSearchUsage(email) {
     return { allowed: false, reason: 'missing_email' };
   }
 
-  const user = await ensureUserRecord(normalized);
+  // Do NOT create user record - only check if it exists
+  // User records are ONLY created when payment succeeds (via activatePlan)
+  const user = await getUserRecord(normalized);
+  
+  // If user doesn't exist, they haven't paid yet - require payment
+  if (!user) {
+    return { allowed: false, reason: 'payment_required', planStatus: 'unknown' };
+  }
+
+  // User exists - check their plan status
   if (user.plan_status === 'active') {
     return { allowed: true, planStatus: 'active', searchCount: user.search_count || 0 };
   }
 
+  // User has 'free' status - check search limit
   const currentCount = user.search_count || 0;
   if (currentCount >= FREE_SEARCH_LIMIT) {
     return { allowed: false, planStatus: user.plan_status || 'free', searchCount: currentCount };
   }
 
+  // Increment search count for free users
   const newCount = currentCount + 1;
   const { error } = await supabase
     .from(TABLE_NAME)
@@ -110,35 +121,63 @@ async function checkCheckoutStatusFromPolar(checkoutId) {
 
   try {
     const fetch = require('node-fetch');
+
+    // This is the CORRECT and ONLY reliable endpoint
     const response = await fetch(`${POLAR_API_BASE_URL}/checkout-links/${checkoutId}`, {
       method: 'GET',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${POLAR_API_KEY}`
-      }
+        Authorization: `Bearer ${POLAR_API_KEY}`,
+      },
     });
 
     if (!response.ok) {
-      console.warn(`Failed to fetch checkout status for ${checkoutId}:`, response.status);
+      const errorText = await response.text().catch(() => '');
+      console.warn(`Polar API error ${response.status} for checkout ${checkoutId}:`, errorText);
       return null;
     }
 
-    const data = await response.json();
-    const checkout = data?.data || data;
-    const attributes = checkout?.attributes || checkout;
+    const json = await response.json();
+    const checkout = json?.data || json;
+
+    if (!checkout) {
+      console.warn(`No checkout data returned from Polar for ${checkoutId}`);
+      return null;
+    }
+
+    // This is the key field! Status can be: draft, open, pending, succeeded, failed, canceled, expired
+    const status = checkout.status;
+    const isPaid = status === 'succeeded';
     
-    // Check if payment is completed/succeeded
-    const status = attributes?.status || checkout?.status;
-    const isPaid = status === 'paid' || status === 'completed' || status === 'succeeded' || 
-                   attributes?.paid === true || checkout?.paid === true;
+    // Extract email - prioritize customer_email field, fallback to success_url parsing
+    let email = checkout.customer_email || null;
     
+    if (!email && checkout.success_url) {
+      try {
+        const url = new URL(checkout.success_url);
+        // url.searchParams.get() already decodes URL-encoded values
+        email = url.searchParams.get('email') || url.searchParams.get('customer_email');
+      } catch (e) {
+        // If URL parsing fails, try regex and decode manually
+        const emailMatch = checkout.success_url.match(/[?&]email=([^&]+)/i);
+        if (emailMatch) {
+          email = decodeURIComponent(emailMatch[1]);
+        }
+      }
+    }
+
+    console.log(`💰 Checkout ${checkoutId} → Status: ${status}, Paid: ${isPaid}, Email: ${email || 'unknown'}`);
+
     return {
       isPaid,
-      status,
-      email: attributes?.customer_email || checkout?.customer_email
+      status: status || 'unknown',
+      email: email || null,
+      order_id: checkout.order_id || null,
+      customer_id: checkout.customer_id || null,
     };
   } catch (error) {
     console.error('Error checking Polar checkout status:', error);
+    console.error('Error stack:', error.stack);
     return null;
   }
 }
@@ -157,29 +196,65 @@ async function getPlanStatus(email, autoVerifyPending = true) {
     return { planStatus: 'unknown', allowed: false, reason: 'missing_email' };
   }
 
-  const user = await ensureUserRecord(normalized);
+  // Do NOT create user record - only check if it exists
+  // User records are ONLY created when payment succeeds (via activatePlan)
+  const user = await getUserRecord(normalized);
   
-  // If status is pending and we have a checkout_id, verify payment status from Polar
-  if (autoVerifyPending && user.plan_status === 'pending' && user.checkout_id) {
-    console.log(`🔍 Checking payment status for pending checkout: ${user.checkout_id}`);
-    const checkoutStatus = await checkCheckoutStatusFromPolar(user.checkout_id);
-    
-    if (checkoutStatus && checkoutStatus.isPaid) {
-      console.log(`✅ Payment confirmed for ${normalized}, activating plan`);
-      await activatePlan(normalized, user.checkout_id);
-      // Re-fetch user record to get updated status
-      const updatedUser = await getUserRecord(normalized);
-      return {
-        planStatus: updatedUser?.plan_status || 'active',
-        searchCount: updatedUser?.search_count || 0,
-        allowed: true,
-        freeSearchLimit: FREE_SEARCH_LIMIT
-      };
-    } else if (checkoutStatus) {
-      console.log(`⏳ Checkout ${user.checkout_id} status: ${checkoutStatus.status} (not paid yet)`);
+  // If user doesn't exist, they haven't paid yet - require payment
+  if (!user) {
+    return {
+      planStatus: 'unknown',
+      allowed: false,
+      reason: 'payment_required',
+      freeSearchLimit: FREE_SEARCH_LIMIT
+    };
+  }
+  
+  // Handle legacy pending records (for backward compatibility)
+  // Convert pending to free if payment not confirmed
+  if (user.plan_status === 'pending' && user.checkout_id) {
+    if (autoVerifyPending) {
+      console.log(`🔍 Checking payment status for legacy pending checkout: ${user.checkout_id}`);
+      const checkoutStatus = await checkCheckoutStatusFromPolar(user.checkout_id);
+      
+      if (checkoutStatus && checkoutStatus.isPaid) {
+        console.log(`✅ Payment confirmed for ${normalized}, activating plan`);
+        await activatePlan(normalized, user.checkout_id);
+        // Re-fetch user record to get updated status
+        const updatedUser = await getUserRecord(normalized);
+        return {
+          planStatus: updatedUser?.plan_status || 'active',
+          searchCount: updatedUser?.search_count || 0,
+          allowed: true,
+          freeSearchLimit: FREE_SEARCH_LIMIT
+        };
+      } else {
+        // Payment not confirmed - convert pending to free (preserve search_count)
+        console.log(`⏳ Checkout ${user.checkout_id} status: ${checkoutStatus?.status || 'unknown'} - Converting pending to free`);
+        const { error } = await supabase
+          .from(TABLE_NAME)
+          .update({
+            plan_status: 'free',
+            checkout_id: null // Clear checkout_id since payment not confirmed
+          })
+          .eq('email', normalized);
+        
+        if (error) {
+          console.error('Error converting pending to free:', error);
+        }
+        
+        // Return free status with preserved search_count
+        return {
+          planStatus: 'free',
+          searchCount: user.search_count || 0,
+          allowed: (user.search_count || 0) < FREE_SEARCH_LIMIT,
+          freeSearchLimit: FREE_SEARCH_LIMIT
+        };
+      }
     }
   }
   
+  // Normal flow: only 'active' or 'free' states exist
   return {
     planStatus: user.plan_status || 'free',
     searchCount: user.search_count || 0,
@@ -193,18 +268,13 @@ async function markCheckoutInitiated(email, checkoutId) {
   const normalized = normalizeEmail(email);
   if (!normalized) return;
 
-  const { error } = await supabase
-    .from(TABLE_NAME)
-    .upsert({
-      email: normalized,
-      plan_status: 'pending',
-      checkout_id: checkoutId,
-      updated_at: new Date().toISOString()
-    }, { onConflict: 'email' });
-
-  if (error) {
-    console.error('Supabase markCheckoutInitiated error:', error);
-  }
+  // Don't create database record or change status when checkout is initiated
+  // Only log it. Database record will be created ONLY when payment succeeds (via activatePlan)
+  console.log(`🛒 Checkout initiated for ${normalized} (checkout: ${checkoutId})`);
+  
+  // If user already exists, don't modify their record - keep current state
+  // If user doesn't exist, they will NOT be created until payment succeeds
+  // Payment success (via activatePlan) will be the ONLY time we create records with 'active' status
 }
 
 async function activatePlan(email, checkoutId) {
@@ -212,18 +282,116 @@ async function activatePlan(email, checkoutId) {
   const normalized = normalizeEmail(email);
   if (!normalized) return;
 
+  // ONLY create/update database record when payment succeeds
+  // This is the ONLY place where we set plan_status to 'active'
   const { error } = await supabase
     .from(TABLE_NAME)
-    .update({
+    .upsert({
+      email: normalized,
       plan_status: 'active',
       checkout_id: checkoutId || null,
-      search_count: 0,
+      search_count: 0, // Reset search count when payment succeeds
       updated_at: new Date().toISOString()
-    })
-    .eq('email', normalized);
+    }, { 
+      onConflict: 'email',
+      ignoreDuplicates: false
+    });
 
   if (error) {
     console.error('Supabase activatePlan error:', error);
+    throw error;
+  }
+  
+  console.log(`✅ Plan activated for ${normalized}${checkoutId ? ` (checkout: ${checkoutId})` : ''}`);
+  
+  // Verify the update was successful
+  const updated = await getUserRecord(normalized);
+  if (updated && updated.plan_status !== 'active') {
+    console.warn(`⚠️  Plan status update may have failed. Expected 'active', got '${updated.plan_status}'`);
+  }
+}
+
+async function markPaymentFailed(email, checkoutId, reason = null) {
+  if (paywallUnavailable()) return;
+  const normalized = normalizeEmail(email);
+  if (!normalized) return;
+
+  // Don't update database when payment fails
+  // Keep user's current state (search_count, plan_status) unchanged
+  // Only log the failure for debugging
+  console.log(`❌ Payment failed for ${normalized}${checkoutId ? ` (checkout: ${checkoutId})` : ''}${reason ? ` - ${reason}` : ''}`);
+  console.log(`   → User's current state preserved (search_count and plan_status unchanged)`);
+}
+
+async function getAllPendingCheckouts() {
+  if (paywallUnavailable()) {
+    return [];
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from(TABLE_NAME)
+      .select('email, checkout_id, plan_status, updated_at')
+      .eq('plan_status', 'pending')
+      .not('checkout_id', 'is', null);
+
+    if (error) {
+      console.error('Supabase getAllPendingCheckouts error:', error);
+      return [];
+    }
+
+    return data || [];
+  } catch (error) {
+    console.error('Error fetching pending checkouts:', error);
+    return [];
+  }
+}
+
+async function verifyAndActivatePendingCheckout(email, checkoutId) {
+  if (!checkoutId) {
+    return { success: false, error: 'No checkout ID provided' };
+  }
+
+  console.log(`🔍 Verifying pending checkout for ${email}: ${checkoutId}`);
+  const checkoutStatus = await checkCheckoutStatusFromPolar(checkoutId);
+  
+  if (!checkoutStatus) {
+    return { 
+      success: false, 
+      error: 'Could not fetch checkout status from Polar',
+      email,
+      checkoutId
+    };
+  }
+
+  if (checkoutStatus.isPaid) {
+    // Use email from checkout if available, otherwise use provided email
+    const emailToUse = checkoutStatus.email || email;
+    if (emailToUse) {
+      await activatePlan(emailToUse, checkoutId);
+      return {
+        success: true,
+        message: 'Payment confirmed and plan activated',
+        email: emailToUse,
+        checkoutId,
+        checkoutStatus
+      };
+    } else {
+      return {
+        success: false,
+        error: 'No email found in checkout status',
+        checkoutId,
+        checkoutStatus
+      };
+    }
+  } else {
+    return {
+      success: false,
+      error: `Payment not confirmed. Status: ${checkoutStatus.status}`,
+      email,
+      checkoutId,
+      checkoutStatus
+    };
   }
 }
 
@@ -234,6 +402,10 @@ module.exports = {
   getPlanStatus,
   markCheckoutInitiated,
   activatePlan,
-  normalizeEmail
+  markPaymentFailed,
+  normalizeEmail,
+  checkCheckoutStatusFromPolar,
+  getAllPendingCheckouts,
+  verifyAndActivatePendingCheckout
 };
 

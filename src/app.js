@@ -59,9 +59,34 @@ app.set('trust proxy', true);
 
 // Middleware
 app.use(cors());
+
+// Special handling for webhook endpoint to preserve raw body for signature verification
+// This must be before express.json() to capture raw body
+app.use('/api/paywall/webhook', express.raw({ type: 'application/json', limit: '10mb' }), (req, res, next) => {
+  // Store raw body for signature verification
+  // On Vercel, req.body is already a Buffer when using express.raw()
+  if (Buffer.isBuffer(req.body)) {
+    req.rawBody = req.body;
+  } else if (typeof req.body === 'string') {
+    req.rawBody = Buffer.from(req.body, 'utf8');
+  } else {
+    req.rawBody = Buffer.from(JSON.stringify(req.body || {}), 'utf8');
+  }
+  
+  // Parse JSON for easy access in handler
+  try {
+    req.body = JSON.parse(req.rawBody.toString('utf8'));
+  } catch (e) {
+    req.body = {};
+  }
+  next();
+});
+
+// Standard JSON parsing for all other routes
 app.use(express.json({
   verify: (req, res, buf) => {
-    if (req.originalUrl.startsWith('/api/paywall/webhook')) {
+    // Store raw body for other routes that might need it
+    if (!req.rawBody) {
       req.rawBody = Buffer.from(buf);
     }
   }
