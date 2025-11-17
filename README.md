@@ -54,7 +54,7 @@ A comprehensive event intelligence platform that identifies scheduling conflicts
 
 3. **Set up environment variables:**
    ```bash
-   cp .env.example .env
+   cp env.example .env
    ```
    Edit `.env` and add your API keys:
    - `TICKETMASTER_API_KEY` - Required
@@ -105,7 +105,7 @@ event-conflict-finder/
 │   │   └── style.css          # Frontend styling
 │   └── js/
 │       └── app.js             # Frontend JavaScript logic
-├── .env.example               # Environment variables template
+├── env.example                # Environment variables template
 ├── .gitignore                 # Git ignore rules
 ├── package.json               # Node.js dependencies and scripts
 └── README.md                  # This file
