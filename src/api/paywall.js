@@ -5,13 +5,30 @@ const paywallService = require('../utils/paywallService');
 
 const router = express.Router();
 
+function deriveFrontendUrl() {
+  if (process.env.FRONTEND_URL) {
+    return process.env.FRONTEND_URL;
+  }
+
+  if (process.env.VERCEL_URL) {
+    // Vercel provides the hostname without protocol
+    const host = process.env.VERCEL_URL.startsWith('http')
+      ? process.env.VERCEL_URL
+      : `https://${process.env.VERCEL_URL}`;
+    return host;
+  }
+
+  return 'http://localhost:3000';
+}
+
 const POLAR_API_BASE_URL = process.env.POLAR_API_BASE_URL || 'https://api.polar.sh/v1';
 const POLAR_API_KEY = process.env.POLAR_API_KEY;
 const POLAR_PRODUCT_ID = process.env.POLAR_PRODUCT_ID;
 const POLAR_PRODUCT_PRICE_ID = process.env.POLAR_PRODUCT_PRICE_ID;
 const POLAR_PAYMENT_PROCESSOR = process.env.POLAR_PAYMENT_PROCESSOR || 'stripe';
-const POLAR_SUCCESS_URL = process.env.POLAR_SUCCESS_URL || process.env.FRONTEND_URL || 'http://localhost:3000/?payment=success';
-const POLAR_CANCEL_URL = process.env.POLAR_CANCEL_URL || process.env.FRONTEND_URL || 'http://localhost:3000/?payment=cancelled';
+const FRONTEND_BASE_URL = deriveFrontendUrl();
+const POLAR_SUCCESS_URL = process.env.POLAR_SUCCESS_URL || `${FRONTEND_BASE_URL}?payment=success`;
+const POLAR_CANCEL_URL = process.env.POLAR_CANCEL_URL || `${FRONTEND_BASE_URL}?payment=cancelled`;
 const POLAR_WEBHOOK_SECRET = process.env.POLAR_WEBHOOK_SECRET;
 
 function appendParams(baseUrl, params = {}) {
@@ -274,6 +291,17 @@ router.post('/webhook', async (req, res) => {
     if (eventType === 'checkout.updated' && checkoutSuccessStatuses.has(checkoutStatus)) {
       isCheckoutSucceeded = true;
       console.error(`✅ WEBHOOK: checkout.updated with status=${checkoutStatus} treated as success`);
+    } else if (eventType === 'checkout.updated' && checkoutStatus && !checkoutSuccessStatuses.has(checkoutStatus)) {
+      console.error(`ℹ️  WEBHOOK: checkout.updated status=${checkoutStatus} (not final) – waiting for Polar to send success/failure`);
+      if (!res.headersSent) {
+        return res.status(200).json({
+          received: true,
+          event: eventType,
+          processed: false,
+          status: checkoutStatus
+        });
+      }
+      return;
     }
 
     // Handle multiple event types that indicate payment success
