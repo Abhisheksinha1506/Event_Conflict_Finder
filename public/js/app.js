@@ -2781,8 +2781,14 @@ class EventConflictFinder {
 
   setPaywallMessage(message, type = 'info') {
     if (!this.paywallMessageElement) return;
-    this.paywallMessageElement.textContent = message || '';
-    this.paywallMessageElement.setAttribute('data-variant', type);
+    if (message && message.trim()) {
+      this.paywallMessageElement.textContent = message;
+      this.paywallMessageElement.setAttribute('data-variant', type);
+      this.paywallMessageElement.style.display = 'block';
+    } else {
+      this.paywallMessageElement.textContent = '';
+      this.paywallMessageElement.style.display = 'none';
+    }
   }
 
   async handleSignInSubmit(event) {
