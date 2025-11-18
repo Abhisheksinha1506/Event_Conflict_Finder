@@ -69,14 +69,13 @@ function appendParams(baseUrl, params = {}) {
   }
 }
 
-function resolveRedirectUrls(req, email) {
+function resolveRedirectUrls(req) {
   const baseUrl = deriveFrontendUrl(req);
   const successBase = process.env.POLAR_SUCCESS_URL || `${baseUrl}?payment=success`;
   const cancelBase = process.env.POLAR_CANCEL_URL || `${baseUrl}?payment=cancelled`;
 
   const successUrl = appendParams(successBase, {
-    payment: 'success',
-    email: email || undefined
+    payment: 'success'
   });
 
   const cancelUrl = appendParams(cancelBase, {
@@ -124,7 +123,7 @@ router.post('/checkout', async (req, res) => {
       return res.status(503).json({ error: 'Checkout disabled. Missing configuration.' });
     }
 
-    const { successUrl, cancelUrl } = resolveRedirectUrls(req, normalizedEmail);
+    const { successUrl, cancelUrl } = resolveRedirectUrls(req);
 
     const payload = {
       success_url: successUrl,
