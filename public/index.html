@@ -15,9 +15,14 @@
 </head>
 <body class="bg-gray-50 min-h-screen">
     <div class="container mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-8">
-        <header class="text-center mb-12">
+        <header class="mb-12">
+            <div class="flex justify-end mb-4">
+                <button id="logout-button" class="hidden text-xs tracking-wide uppercase font-semibold text-gray-900 border border-gray-900 px-4 py-2 hover:bg-gray-900 hover:text-white transition">Log out</button>
+            </div>
+            <div class="text-center">
             <h1 class="text-4xl md:text-5xl lg:text-6xl font-light text-gray-900 mb-4 tracking-tight">Event Conflict Finder</h1>
             <p class="text-lg md:text-xl text-gray-600 font-light max-w-2xl mx-auto">Discover scheduling conflicts across multiple ticketing platforms</p>
+            </div>
         </header>
 
         <main>
@@ -100,7 +105,6 @@
                 </div>
             </div>
         </main>
-
         <footer class="text-center mt-16 py-8 border-t border-gray-200">
             <p class="text-sm text-gray-500 font-light">Event Conflict Finder - Phase 1</p>
         </footer>

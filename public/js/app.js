@@ -60,6 +60,7 @@ class EventConflictFinder {
     this.freeSearchCount = this.paywallState.freeSearchCount;
     this.userEmail = this.paywallState.email;
     this.hasUnlimitedAccess = this.paywallState.unlimitedAccess;
+    this.logoutButton = null;
     this.paywallModal = null;
     this.paywallMessageElement = null;
     
@@ -2650,6 +2651,39 @@ class EventConflictFinder {
     } catch (error) {
       console.warn('Unable to persist paywall state:', error);
     }
+
+    this.updateLogoutVisibility();
+  }
+
+  updateLogoutVisibility() {
+    if (!this.logoutButton) return;
+    const hasUser = !!(this.userEmail && this.userEmail.trim().length > 0);
+    if (hasUser) {
+      this.logoutButton.classList.remove('hidden');
+    } else {
+      this.logoutButton.classList.add('hidden');
+    }
+  }
+
+  logout() {
+    this.persistPaywallState({
+      email: '',
+      unlimitedAccess: false,
+      freeSearchCount: 0
+    });
+    try {
+      localStorage.removeItem('ecf_free_search_count');
+      localStorage.removeItem('ecf_user_email');
+      localStorage.removeItem('ecf_unlimited_access');
+      localStorage.removeItem('ecf_free_search_limit');
+    } catch (error) {
+      console.warn('Unable to clear paywall state:', error);
+    }
+    this.userEmail = '';
+    this.hasUnlimitedAccess = false;
+    this.freeSearchCount = 0;
+    this.showToast('You have been logged out.', 'info');
+    this.hidePaywallModal();
   }
 
   canProceedWithSearch() {
@@ -2701,6 +2735,12 @@ class EventConflictFinder {
     const checkoutBtn = document.getElementById('paywall-checkout-btn');
     if (checkoutBtn) {
       checkoutBtn.addEventListener('click', () => this.startCheckout());
+    }
+
+    this.logoutButton = document.getElementById('logout-button');
+    if (this.logoutButton) {
+      this.logoutButton.addEventListener('click', () => this.logout());
+      this.updateLogoutVisibility();
     }
   }
 
@@ -2856,7 +2896,7 @@ class EventConflictFinder {
       if (paymentStatus === 'success' || paymentStatus === 'cancelled' || paymentStatus === 'failed') {
         // Verify payment status with server (will auto-check Polar API if pending)
         if (!email) {
-          this.showToast('Payment completed. Enter the email you used at checkout to unlock unlimited searches.', 'info');
+          this.showToast('Payment completed.', 'info');
         } else {
           try {
             const status = await this.verifyPlanForEmail(email);
