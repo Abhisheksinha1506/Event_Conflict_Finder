@@ -6,55 +6,95 @@
     <title>Event Conflict Finder</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg">
     <link rel="alternate icon" href="/favicon.svg">
-    <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- Leaflet CSS -->
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <!-- Custom CSS for overrides -->
     <link rel="stylesheet" href="/css/style.css">
 </head>
-<body class="bg-gray-50 min-h-screen">
-    <div class="container mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-8">
-        <header class="mb-12">
-            <div class="flex justify-end mb-4">
-                <button id="logout-button" class="hidden text-xs tracking-wide uppercase font-semibold text-gray-900 border border-gray-900 px-4 py-2 hover:bg-gray-900 hover:text-white transition">Log out</button>
+<body class="ecf-body">
+    <div class="ecf-surface">
+        <div class="ecf-blur ecf-blur--one"></div>
+        <div class="ecf-blur ecf-blur--two"></div>
+    </div>
+
+    <div class="ecf-page">
+        <header class="ecf-header">
+            <div class="brand">
+                <div class="brand-icon">
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M12 3l7.794 4.5v9L12 21l-7.794-4.5v-9z" fill="none" stroke-width="1.6" stroke="currentColor" stroke-linejoin="round"></path>
+                        <circle cx="12" cy="12" r="2.75" fill="currentColor"></circle>
+                    </svg>
+                </div>
+                <div>
+                    <p class="brand-title">Event Conflict Finder</p>
+                    <p class="brand-subtitle">Phase I — Radar Console</p>
+                </div>
             </div>
-            <div class="text-center">
-            <h1 class="text-4xl md:text-5xl lg:text-6xl font-light text-gray-900 mb-4 tracking-tight">Event Conflict Finder</h1>
-            <p class="text-lg md:text-xl text-gray-600 font-light max-w-2xl mx-auto">Discover scheduling conflicts across multiple ticketing platforms</p>
+            <div class="header-actions">
+                <span class="header-pill">Inspired by Cryptix</span>
+                <button id="logout-button" class="header-logout hidden">Log out</button>
             </div>
         </header>
 
-        <main>
-            <div class="bg-white rounded-none border border-gray-200 p-8 mb-8">
-                <div class="search-controls">
-                    <h2 class="text-xl font-light text-gray-900 mb-8 tracking-wide">Search Events</h2>
-                    <div class="grid grid-cols-1 md:grid-cols-[2fr_1fr_1fr_auto_auto] gap-6 items-end">
-                        <div class="input-group">
-                            <label for="location" class="block text-xs font-normal text-gray-500 mb-3 uppercase tracking-wider">Location</label>
-                            <div class="location-input-wrapper relative z-[10001]">
-                                <input type="text" id="location" placeholder="Enter city name" autocomplete="off" 
-                                       class="w-full px-0 py-3 border-0 border-b border-gray-300 rounded-none focus:outline-none focus:border-gray-900 transition-colors text-base bg-transparent placeholder-gray-400">
-                                <div id="location-suggestions" class="location-suggestions"></div>
+        <main class="ecf-main">
+            <section class="hero">
+                <div class="hero-copy">
+                    <p class="eyebrow">Pro Venue Intelligence</p>
+                    <h1>Take control of every stage slot</h1>
+                    <p class="lead">A Cryptix-inspired dashboard for spotting double bookings, venue saturation, and cross-platform clashes before they go live.</p>
+                    <div class="hero-metrics">
+                        <div class="metric-card">
+                            <div class="metric-icon">
+                                <svg viewBox="0 0 24 24" class="solar-icon" aria-hidden="true">
+                                    <path d="M12 3l7 4v8l-7 4-7-4V7l7-4z" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+                                    <path d="M9 12l2 2 4-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+                                </svg>
                             </div>
+                            <p class="metric-label">Conflict-grade telemetry</p>
+                            <p class="metric-value">Sub-minute</p>
                         </div>
-                        <div class="input-group">
-                            <label for="radius" class="block text-xs font-normal text-gray-500 mb-3 uppercase tracking-wider">Search Radius (miles)</label>
-                            <input type="number" id="radius" value="25" min="1" max="100" 
-                                   class="w-full px-0 py-3 border-0 border-b border-gray-300 rounded-none focus:outline-none focus:border-gray-900 transition-colors text-base bg-transparent">
+                        <div class="metric-card">
+                            <div class="metric-icon">
+                                <svg viewBox="0 0 24 24" class="solar-icon" aria-hidden="true">
+                                    <circle cx="12" cy="12" r="6.5" stroke="currentColor" stroke-width="1.6" fill="none"/>
+                                    <path d="M12 5.5v13m-6.5-6.5h13" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+                                </svg>
+                            </div>
+                            <p class="metric-label">Global venue coverage</p>
+                            <p class="metric-value">45+ metros</p>
                         </div>
-                        <div class="input-group">
-                            <label for="timeBuffer" class="block text-xs font-normal text-gray-500 mb-3 uppercase tracking-wider">Time Buffer (minutes)</label>
-                            <input type="number" id="timeBuffer" value="30" min="0" max="120" 
-                                   class="w-full px-0 py-3 border-0 border-b border-gray-300 rounded-none focus:outline-none focus:border-gray-900 transition-colors text-base bg-transparent">
+                        <div class="metric-card">
+                            <div class="metric-icon">
+                                <svg viewBox="0 0 24 24" class="solar-icon" aria-hidden="true">
+                                    <path d="M5 6.5h14M5 12h9M5 17.5h14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+                                </svg>
+                            </div>
+                            <p class="metric-label">Solar iconography</p>
+                            <p class="metric-value">by Icons8</p>
                         </div>
-                        <div class="input-group flex flex-col justify-end">
-                            <label class="block text-xs font-normal text-gray-500 mb-3 uppercase tracking-wider">Theme</label>
+                    </div>
+                </div>
+                <div class="hero-panel">
+                    <div class="hero-panel__badge">Conflict radar online</div>
+                    <p class="hero-panel__title">“Sleek, secure, and lightning fast—now tailored for live events.”</p>
+                    <p class="hero-panel__body">We borrowed Cryptix’s progressive gradient language and paired it with Solar icons for a premium operator experience.</p>
+                </div>
+            </section>
+
+            <section class="console">
+                <div class="console-card">
+                    <div class="console-head">
+                        <div>
+                            <p class="eyebrow">Live search</p>
+                            <h2>Radar Console</h2>
+                        </div>
+                        <div class="console-theme">
+                            <span>Theme</span>
                             <label class="theme-switch-wrapper">
                                 <input type="checkbox" id="theme-toggle" class="theme-switch-input" aria-label="Toggle map theme">
                                 <div id="theme-toggle-track" class="theme-switch-track" data-theme="light">
                                     <span class="theme-switch-icon sun" aria-hidden="true">
-                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
                                             <circle cx="12" cy="12" r="4"></circle>
                                             <line x1="12" y1="2" x2="12" y2="5"></line>
                                             <line x1="12" y1="19" x2="12" y2="22"></line>
@@ -67,7 +107,7 @@
                                         </svg>
                                     </span>
                                     <span class="theme-switch-icon moon" aria-hidden="true">
-                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
                                             <path d="M21 12.79A9 9 0 0 1 11.21 3 7 7 0 1 0 21 12.79z"></path>
                                         </svg>
                                     </span>
@@ -75,103 +115,147 @@
                                 </div>
                             </label>
                         </div>
-                        <div class="input-group flex flex-col justify-end">
-                            <label class="block text-xs font-normal text-gray-500 mb-3 uppercase tracking-wider invisible">Search</label>
-                            <button id="search-btn" class="bg-gray-900 text-white font-light px-8 py-3 rounded-none hover:bg-gray-800 transition-all duration-200 whitespace-nowrap min-w-[140px] tracking-wide uppercase text-xs">
-                                Search
+                    </div>
+                    <div class="console-grid">
+                        <div class="input-field">
+                            <label for="location">Location</label>
+                            <div class="input-shell">
+                                <svg viewBox="0 0 24 24" class="input-icon" aria-hidden="true">
+                                    <path d="M12 21s-6.5-5.25-6.5-10.5A6.5 6.5 0 1 1 12 21z" stroke="currentColor" stroke-width="1.4" fill="none"/>
+                                    <circle cx="12" cy="10.5" r="2.25" stroke="currentColor" stroke-width="1.3" fill="none"/>
+                                </svg>
+                                <input type="text" id="location" placeholder="Search a city or venue" autocomplete="off">
+                            </div>
+                            <div id="location-suggestions" class="location-suggestions"></div>
+                        </div>
+                        <div class="input-field">
+                            <label for="radius">Search radius (miles)</label>
+                            <div class="input-shell">
+                                <svg viewBox="0 0 24 24" class="input-icon" aria-hidden="true">
+                                    <path d="M5 12h14M12 5l7 7-7 7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+                                </svg>
+                                <input type="number" id="radius" value="25" min="1" max="100">
+                            </div>
+                        </div>
+                        <div class="input-field">
+                            <label for="timeBuffer">Time buffer (minutes)</label>
+                            <div class="input-shell">
+                                <svg viewBox="0 0 24 24" class="input-icon" aria-hidden="true">
+                                    <circle cx="12" cy="12" r="8" stroke="currentColor" stroke-width="1.5" fill="none"/>
+                                    <path d="M12 8v4l2.5 1.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                                </svg>
+                                <input type="number" id="timeBuffer" value="30" min="0" max="120">
+                            </div>
+                        </div>
+                        <div class="input-field input-field--cta">
+                            <label class="sr-only" for="search-btn">Search</label>
+                            <button id="search-btn" class="primary-btn">
+                                <span>Deploy search</span>
+                                <svg viewBox="0 0 24 24" aria-hidden="true">
+                                    <path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+                                </svg>
                             </button>
                         </div>
                     </div>
                 </div>
-            </div>
+            </section>
 
-            <div class="grid grid-cols-1 lg:grid-cols-[2fr_1fr] gap-8">
-                <div class="map-section bg-white border border-gray-200 overflow-hidden">
-                    <div id="map" class="w-full h-[600px]"></div>
-                </div>
-                
-                <div class="flex flex-col gap-8">
-                    <div class="bg-white border border-gray-200 p-6 max-h-[290px] overflow-y-auto rounded-sm shadow-sm">
-                        <h3 class="text-sm font-medium text-gray-900 mb-4 uppercase tracking-wider">Events Found</h3>
-                        <div id="events-count" class="text-3xl font-light text-gray-900 mb-6 text-center">0</div>
-                        <div id="events-list" class="events-list flex flex-col gap-4"></div>
+            <section class="dashboard">
+                <div class="map-card">
+                    <div class="map-head">
+                        <div>
+                            <p class="eyebrow">Live feed</p>
+                            <h3>Map intelligence</h3>
+                        </div>
+                        <p class="map-hint">Ticketmaster + Bandsintown overlays</p>
                     </div>
-                    
-                    <div class="bg-white border border-gray-200 p-6 max-h-[290px] overflow-y-auto rounded-sm shadow-sm">
-                        <h3 id="conflict-panel-title" class="text-sm font-medium text-gray-900 mb-4 uppercase tracking-wider">Conflicts Detected</h3>
-                        <div id="conflict-count" class="text-3xl font-light text-gray-900 mb-6 text-center">0</div>
-                        <div id="conflict-list" class="conflict-list flex flex-col gap-4"></div>
+                    <div id="map" class="map-view"></div>
+                </div>
+
+                <div class="insights">
+                    <div class="insight-card">
+                        <div class="insight-head">
+                            <div>
+                                <p class="eyebrow">Event load</p>
+                                <h3>Events found</h3>
+                            </div>
+                            <svg viewBox="0 0 24 24" class="insight-icon" aria-hidden="true">
+                                <path d="M6 19.5V4m6 15.5V4m6 15.5V4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+                            </svg>
+                        </div>
+                        <div id="events-count" class="insight-value">0</div>
+                        <div id="events-list" class="events-list"></div>
+                    </div>
+
+                    <div class="insight-card">
+                        <div class="insight-head">
+                            <div>
+                                <p class="eyebrow">Conflict watch</p>
+                                <h3 id="conflict-panel-title">Conflicts detected</h3>
+                            </div>
+                            <svg viewBox="0 0 24 24" class="insight-icon" aria-hidden="true">
+                                <path d="M12 7v5l3 2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+                                <circle cx="12" cy="12" r="8" stroke="currentColor" stroke-width="1.4" fill="none"/>
+                            </svg>
+                        </div>
+                        <div id="conflict-count" class="insight-value">0</div>
+                        <div id="conflict-list" class="conflict-list"></div>
                     </div>
                 </div>
-            </div>
+            </section>
         </main>
-        <footer class="text-center mt-16 py-8 border-t border-gray-200">
-            <p class="text-sm text-gray-500 font-light">Event Conflict Finder - Phase 1</p>
+
+        <footer class="ecf-footer">
+            <p>Built on Node + Express · UI inspired by <a href="https://cryptix.framer.website/" target="_blank" rel="noreferrer">Cryptix</a> with <a href="https://www.figma.com/community/file/1166831539721848736/solar-icons-set" target="_blank" rel="noreferrer">Solar Icons</a>.</p>
         </footer>
     </div>
 
-    <!-- Unsupported Country Modal -->
-    <div id="unsupported-country-modal" class="hidden fixed inset-0 z-[99999] flex items-center justify-center bg-black/40">
-        <div class="bg-white border border-gray-200 w-[90%] max-w-md overflow-hidden">
-            <div class="bg-gray-900 text-white px-8 py-6 flex justify-between items-center">
-                <h2 class="text-lg font-light uppercase tracking-wider">Coverage Not Available</h2>
-                <button class="modal-close text-white hover:text-gray-300 w-8 h-8 flex items-center justify-center transition-all duration-200" id="modal-close-btn">&times;</button>
+    <div id="unsupported-country-modal" class="modal-overlay hidden">
+        <div class="modal-panel animate-slide-up">
+            <div class="modal-panel__head">
+                <p>Coverage not available</p>
+                <button id="modal-close-btn" aria-label="Close">&times;</button>
             </div>
-            <div class="modal-body px-8 py-10 text-center">
-                <p class="text-base text-gray-700 mb-6 font-light leading-relaxed">
-                    The current application does not cover <strong id="modal-country-name" class="text-gray-900 font-normal">this location</strong>.
-                </p>
-                <p class="text-sm text-gray-500 mb-8 font-light">
-                    We will be expanding soon!
-                </p>
-                <div class="bg-gray-50 border border-gray-200 p-6 text-left">
-                    <p class="text-xs font-light text-gray-500 uppercase tracking-wider mb-3">Currently supported</p>
-                    <p class="text-sm text-gray-700 font-light leading-relaxed">United States, Canada, United Kingdom, Australia, New Zealand, and most European countries.</p>
+            <div class="modal-panel__body">
+                <p class="modal-panel__title">We haven’t deployed intel for <span id="modal-country-name">this location</span> yet.</p>
+                <p class="modal-panel__text">We’re expanding soon—stay tuned for your metro.</p>
+                <div class="modal-panel__support">
+                    <p>Currently supported</p>
+                    <span>United States, Canada, United Kingdom, Australia, New Zealand, and most European hubs.</span>
                 </div>
             </div>
-            <div class="modal-footer bg-white px-8 py-6 flex justify-center border-t border-gray-200">
-                <button class="bg-gray-900 text-white font-light px-10 py-3 rounded-none hover:bg-gray-800 transition-all duration-200 uppercase text-xs tracking-wider" id="modal-ok-btn">Got it</button>
+            <div class="modal-panel__footer">
+                <button id="modal-ok-btn" class="primary-btn">Got it</button>
             </div>
         </div>
     </div>
 
-    <!-- Paywall Modal -->
-    <div id="paywall-modal" class="hidden fixed inset-0 z-[100000] flex items-center justify-center bg-black/50 px-4">
-        <div class="paywall-panel w-full max-w-lg">
+    <div id="paywall-modal" class="modal-overlay hidden">
+        <div class="paywall-panel animate-slide-up">
             <div class="paywall-panel__header">
-                <h2 class="text-lg font-light tracking-wide">Unlimited Plan Required</h2>
-                <button id="paywall-modal-close" class="text-2xl leading-none hover:text-gray-400" aria-label="Close paywall modal">&times;</button>
+                <h2>Unlimited plan required</h2>
+                <button id="paywall-modal-close" aria-label="Close paywall modal">&times;</button>
             </div>
             <div class="paywall-panel__body">
-                <p id="paywall-modal-copy" class="text-sm text-gray-600 mb-4">
-                    You've reached your free search limit. To continue, sign in with an email that already purchased the unlimited plan or create a new account to buy it now.
-                </p>
-
+                <p id="paywall-modal-copy">You’ve reached your free search limit. Sign in with an active plan or purchase unlimited access.</p>
                 <div class="paywall-section">
-                    <h3 class="paywall-section__title">Already purchased?</h3>
+                    <h3>Already purchased?</h3>
                     <form id="paywall-signin-form" class="paywall-form">
-                        <label for="paywall-signin-email" class="paywall-label">Email address</label>
-                        <input id="paywall-signin-email" type="email" required class="paywall-input" placeholder="you@example.com" />
-                        <button type="submit" class="paywall-primary-btn mt-4 w-full">Unlock access</button>
+                        <label for="paywall-signin-email">Email address</label>
+                        <input id="paywall-signin-email" type="email" required placeholder="you@example.com" />
+                        <button type="submit" class="paywall-primary-btn">Unlock access</button>
                     </form>
                 </div>
-
-                <div class="paywall-divider" role="presentation"></div>
-
+                <div class="paywall-divider"></div>
                 <div class="paywall-section">
-                    <h3 class="paywall-section__title">Need unlimited searches?</h3>
-                    <p class="text-sm text-gray-600 leading-relaxed mb-4">
-                        Start a secure checkout and enter your email there. We'll activate unlimited searches automatically once payment completes.
-                    </p>
-                    <button id="paywall-checkout-btn" class="paywall-secondary-btn w-full">Buy unlimited plan</button>
+                    <h3>Need unlimited searches?</h3>
+                    <p>Start a secure Polar checkout, enter your email, and we’ll activate unlimited searches automatically once payment clears.</p>
+                    <button id="paywall-checkout-btn" class="paywall-secondary-btn">Buy unlimited plan</button>
                 </div>
-
-                <div id="paywall-message" class="paywall-message mt-6" data-variant="info"></div>
+                <div id="paywall-message" class="paywall-message" data-variant="info"></div>
             </div>
             <div class="paywall-panel__footer">
-                <p class="text-xs text-gray-500">
-                    Already purchased? Enter the same email above and you're good to go. Next time this popup appears, just enter your email to continue searching instantly.
-                </p>
+                <p>Re-enter the same email anytime to regain access instantly.</p>
             </div>
         </div>
     </div>
