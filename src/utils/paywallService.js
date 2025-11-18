@@ -147,7 +147,9 @@ async function checkCheckoutStatusFromPolar(checkoutId) {
 
     // This is the key field! Status can be: draft, open, pending, succeeded, failed, canceled, expired
     const status = checkout.status;
-    const isPaid = status === 'succeeded';
+    const normalizedStatus = (status || '').toLowerCase();
+    const paidStatuses = new Set(['succeeded', 'paid', 'completed', 'confirmed']);
+    const isPaid = paidStatuses.has(normalizedStatus);
     
     // Extract email - prioritize customer_email field, fallback to success_url parsing
     let email = checkout.customer_email || null;
@@ -298,32 +300,32 @@ async function activatePlan(email, checkoutId) {
   // This is the ONLY place where we set plan_status to 'active'
   try {
     const { data, error } = await supabase
-      .from(TABLE_NAME)
-      .upsert({
-        email: normalized,
-        plan_status: 'active',
-        checkout_id: checkoutId || null,
-        search_count: 0, // Reset search count when payment succeeds
-        updated_at: new Date().toISOString()
-      }, { 
-        onConflict: 'email',
-        ignoreDuplicates: false
+    .from(TABLE_NAME)
+    .upsert({
+      email: normalized,
+      plan_status: 'active',
+      checkout_id: checkoutId || null,
+      search_count: 0, // Reset search count when payment succeeds
+      updated_at: new Date().toISOString()
+    }, { 
+      onConflict: 'email',
+      ignoreDuplicates: false
       })
       .select();
 
-    if (error) {
+  if (error) {
       console.error('❌ Supabase activatePlan error:', error);
       console.error('   Error code:', error.code);
       console.error('   Error message:', error.message);
       console.error('   Error details:', error.details);
-      throw error;
-    }
-    
-    console.log(`✅ Plan activated for ${normalized}${checkoutId ? ` (checkout: ${checkoutId})` : ''}`);
+    throw error;
+  }
+  
+  console.log(`✅ Plan activated for ${normalized}${checkoutId ? ` (checkout: ${checkoutId})` : ''}`);
     console.log(`📦 Upsert result:`, data);
-    
-    // Verify the update was successful
-    const updated = await getUserRecord(normalized);
+  
+  // Verify the update was successful
+  const updated = await getUserRecord(normalized);
     if (updated) {
       console.log(`🔍 Verification - Retrieved record:`, {
         email: updated.email,
@@ -359,6 +361,40 @@ async function markPaymentFailed(email, checkoutId, reason = null) {
   // Only log the failure for debugging
   console.log(`❌ Payment failed for ${normalized}${checkoutId ? ` (checkout: ${checkoutId})` : ''}${reason ? ` - ${reason}` : ''}`);
   console.log(`   → User's current state preserved (search_count and plan_status unchanged)`);
+}
+
+async function deactivatePlan(email, reason = 'revoked') {
+  if (paywallUnavailable()) {
+    console.warn('Paywall unavailable while attempting to deactivate plan');
+    return;
+  }
+
+  const normalized = normalizeEmail(email);
+  if (!normalized) {
+    console.warn('Cannot deactivate plan for invalid email:', email);
+    return;
+  }
+
+  try {
+    console.log(`🔻 Deactivating plan for ${normalized} (reason: ${reason})`);
+    const { error } = await supabase
+      .from(TABLE_NAME)
+      .update({
+        plan_status: 'free',
+        checkout_id: null,
+        search_count: 0,
+        updated_at: new Date().toISOString()
+      })
+      .eq('email', normalized);
+
+    if (error) {
+      console.error('Supabase deactivatePlan error:', error);
+    } else {
+      console.log(`✅ Plan set to free for ${normalized}`);
+    }
+  } catch (error) {
+    console.error('❌ deactivatePlan exception:', error.message);
+  }
 }
 
 async function getAllPendingCheckouts() {
@@ -441,6 +477,7 @@ module.exports = {
   markCheckoutInitiated,
   activatePlan,
   markPaymentFailed,
+  deactivatePlan,
   normalizeEmail,
   checkCheckoutStatusFromPolar,
   getAllPendingCheckouts,

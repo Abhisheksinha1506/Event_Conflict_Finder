@@ -157,39 +157,39 @@ router.post('/webhook', async (req, res) => {
         // Continue processing but log the warning - don't return early
         // This allows customer.updated and other non-payment events to be processed
       } else {
-        // Polar signature format: "t=timestamp,v1=signature"
-        // Polar signs: timestamp + "." + rawBody
-        const matches = signatureHeader.match(/t=([^,]+),v1=([^&]+)/);
-        
-        if (!matches) {
+      // Polar signature format: "t=timestamp,v1=signature"
+      // Polar signs: timestamp + "." + rawBody
+      const matches = signatureHeader.match(/t=([^,]+),v1=([^&]+)/);
+      
+      if (!matches) {
           console.warn('⚠️  Invalid signature format:', signatureHeader);
         } else {
-          const timestamp = matches[1];
-          const providedHash = matches[2];
-          
-          // Polar signs: timestamp + "." + rawBody (as UTF-8 string)
-          const rawBodyString = rawBody.toString('utf8');
-          const signedPayload = `${timestamp}.${rawBodyString}`;
-          
-          const expectedHash = crypto
-            .createHmac('sha256', POLAR_WEBHOOK_SECRET)
-            .update(signedPayload)
-            .digest('hex');
+      const timestamp = matches[1];
+      const providedHash = matches[2];
+      
+      // Polar signs: timestamp + "." + rawBody (as UTF-8 string)
+      const rawBodyString = rawBody.toString('utf8');
+      const signedPayload = `${timestamp}.${rawBodyString}`;
+      
+      const expectedHash = crypto
+        .createHmac('sha256', POLAR_WEBHOOK_SECRET)
+        .update(signedPayload)
+        .digest('hex');
 
-          // Use timing-safe comparison to prevent timing attacks
-          try {
-            const providedBuffer = Buffer.from(providedHash, 'hex');
-            const expectedBuffer = Buffer.from(expectedHash, 'hex');
-            
-            if (providedBuffer.length !== expectedBuffer.length) {
+      // Use timing-safe comparison to prevent timing attacks
+      try {
+        const providedBuffer = Buffer.from(providedHash, 'hex');
+        const expectedBuffer = Buffer.from(expectedHash, 'hex');
+        
+        if (providedBuffer.length !== expectedBuffer.length) {
               console.warn('⚠️  Signature length mismatch');
             } else if (!crypto.timingSafeEqual(providedBuffer, expectedBuffer)) {
               console.warn('⚠️  Signature mismatch');
             } else {
               console.error('✅ WEBHOOK: Signature verified successfully');
             }
-          } catch (sigError) {
-            console.error('❌ Error during signature verification:', sigError.message);
+      } catch (sigError) {
+        console.error('❌ Error during signature verification:', sigError.message);
           }
         }
       }
@@ -231,18 +231,20 @@ router.post('/webhook', async (req, res) => {
       return res.status(200).json({ received: true, event: 'customer.updated', processed: true });
     }
 
-    // Handle checkout.updated events - check if status is "succeeded"
-    // checkout.updated is sent when checkout status changes, including when payment succeeds
+    // Handle checkout.updated events - consider multiple success-ish statuses
+    // checkout.updated is sent when checkout status changes (pending -> confirmed -> succeeded, etc.)
+    const checkoutStatus = (checkoutData?.status || '').toString().toLowerCase();
+    const checkoutSuccessStatuses = new Set(['succeeded', 'paid', 'completed', 'confirmed']);
     let isCheckoutSucceeded = false;
-    if (eventType === 'checkout.updated' && checkoutData?.status === 'succeeded') {
+    if (eventType === 'checkout.updated' && checkoutSuccessStatuses.has(checkoutStatus)) {
       isCheckoutSucceeded = true;
-      console.error('✅ WEBHOOK: checkout.updated with status=succeeded detected');
+      console.error(`✅ WEBHOOK: checkout.updated with status=${checkoutStatus} treated as success`);
     }
 
     // Handle multiple event types that indicate payment success
     // benefit_grant.created is sent when a benefit is granted (payment succeeded)
     // checkout.succeeded is the PRIMARY event Polar sends for successful payments
-    // checkout.updated with status=succeeded also indicates successful payment
+    // checkout.updated with a final status also indicates successful payment
     const successEvents = [
       'benefit_grant.created', // PRIMARY - benefit granted = payment succeeded
       'checkout.succeeded', // PRIMARY event - must be first
@@ -257,7 +259,7 @@ router.post('/webhook', async (req, res) => {
       'payment.completed'
     ];
 
-    // Handle payment failure events
+    // Handle payment failure events / revocations
     const failureEvents = [
       'checkout.payment_failed',
       'checkout.failed',
@@ -371,6 +373,13 @@ router.post('/webhook', async (req, res) => {
       } catch (failureError) {
         console.error('❌ Error processing payment failure:', failureError.message);
         // Continue - don't throw, return 200 OK
+      }
+    } else if (eventType === 'benefit_grant.revoked') {
+      if (email) {
+        console.error(`🔻 WEBHOOK: Benefit revoked for ${email}, reverting plan`);
+        await paywallService.deactivatePlan(email, 'benefit_revoked');
+      } else {
+        console.warn('⚠️  WEBHOOK: benefit_grant.revoked missing customer email');
       }
     } else {
       console.error('ℹ️  WEBHOOK: Event type not handled:', eventType);
