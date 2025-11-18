@@ -1088,7 +1088,6 @@ class EventConflictFinder {
         </h4>
         <p><strong>Venue:</strong> ${event.venue.name || 'N/A'}</p>
         <p><strong>Time:</strong> ${startDate.toLocaleString()} - ${endDate.toLocaleTimeString()}</p>
-        <span class="source-badge ${event.source}">${event.source}</span>
       `;
 
       if (event.source === 'ticketmaster' && event.url) {
