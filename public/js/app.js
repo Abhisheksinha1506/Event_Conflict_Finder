@@ -58,8 +58,15 @@ class EventConflictFinder {
     this.paywallState = this.loadPaywallState();
     this.freeSearchLimit = this.paywallState.freeSearchLimit;
     this.freeSearchCount = this.paywallState.freeSearchCount;
-    this.userEmail = this.paywallState.email;
+    // Normalize email to lowercase and ensure it's set
+    this.userEmail = (this.paywallState.email || '').trim().toLowerCase();
     this.hasUnlimitedAccess = this.paywallState.unlimitedAccess;
+    
+    // Debug log to help troubleshoot
+    if (this.userEmail) {
+      console.log('📧 Loaded email from localStorage:', this.userEmail);
+      console.log('🔓 Unlimited access:', this.hasUnlimitedAccess);
+    }
     this.logoutButton = null;
     this.paywallModal = null;
     this.paywallMessageElement = null;
@@ -432,9 +439,16 @@ class EventConflictFinder {
         this.clickMarker = null;
       }
 
+      // Always send email header if we have it stored
+      // This ensures the backend can verify plan status even if localStorage was cleared
       const headers = {};
-      if (this.userEmail) {
-        headers['X-User-Email'] = this.userEmail;
+      const emailToSend = this.userEmail || (this.paywallState?.email || '');
+      if (emailToSend && emailToSend.trim()) {
+        headers['X-User-Email'] = emailToSend.trim().toLowerCase();
+        // Update instance variable if it was missing
+        if (!this.userEmail) {
+          this.userEmail = emailToSend.trim().toLowerCase();
+        }
       }
 
       // Fetch events from API
@@ -2810,12 +2824,17 @@ class EventConflictFinder {
   }
 
   async verifyPlanForEmail(email) {
+    const normalizedEmail = (email || '').trim().toLowerCase();
+    if (!normalizedEmail) {
+      throw new Error('Email is required');
+    }
+
     const response = await fetch('/api/paywall/status', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({ email })
+      body: JSON.stringify({ email: normalizedEmail })
     });
 
     if (!response.ok) {
@@ -2825,10 +2844,15 @@ class EventConflictFinder {
     const data = await response.json();
     if (data.freeSearchLimit) {
       this.freeSearchLimit = data.freeSearchLimit;
-      const updates = { freeSearchCount: data.searchCount || 0 };
-      if (data.planStatus === 'active' && email) {
-        updates.email = email;
+      const updates = { 
+        freeSearchCount: data.searchCount || 0,
+        email: normalizedEmail // Always update email when verifying
+      };
+      if (data.planStatus === 'active') {
         updates.unlimitedAccess = true;
+        updates.freeSearchCount = 0; // Reset count for active users
+      } else {
+        updates.unlimitedAccess = false;
       }
       this.persistPaywallState(updates);
     }
@@ -2885,11 +2909,18 @@ class EventConflictFinder {
   syncPlanHeaders(headers) {
     if (!headers?.get) return;
     const plan = headers.get('X-Paywall-Plan');
-    if (plan === 'active' && !this.hasUnlimitedAccess) {
-      this.persistPaywallState({
+    if (plan === 'active') {
+      // If server confirms active status, ensure localStorage is updated
+      // Preserve email if it exists, or use the one from the request
+      const updates = {
         unlimitedAccess: true,
         freeSearchCount: 0
-      });
+      };
+      // Preserve email if we have it, otherwise keep current state
+      if (this.userEmail) {
+        updates.email = this.userEmail;
+      }
+      this.persistPaywallState(updates);
     }
   }
 
@@ -2900,6 +2931,24 @@ class EventConflictFinder {
       const emailParam = params.get('email');
       const storedEmail = this.userEmail;
       const email = (emailParam || storedEmail || '').trim();
+
+      const cleanupUrlParams = () => {
+        params.delete('payment');
+        params.delete('customer_session_token');
+        if (params.has('email')) {
+          params.delete('email');
+        }
+
+        const polarParams = ['session_id', 'checkout_id', 'payment_intent', 'id'];
+        polarParams.forEach(param => {
+          if (params.has(param)) {
+            params.delete(param);
+          }
+        });
+
+        const newUrl = `${window.location.pathname}${params.toString() ? `?${params.toString()}` : ''}`;
+        window.history.replaceState({}, document.title, newUrl);
+      };
 
       if (paymentStatus === 'success' || paymentStatus === 'cancelled' || paymentStatus === 'failed') {
         // Verify payment status with server (will auto-check Polar API if pending)
@@ -2917,6 +2966,7 @@ class EventConflictFinder {
               freeSearchCount: 0
             });
             this.showToast('Payment confirmed! You now have unlimited searches.', 'success');
+            cleanupUrlParams();
             return;
           } else if (status.planStatus === 'pending') {
             // Payment is still processing - poll for status update
@@ -2929,6 +2979,7 @@ class EventConflictFinder {
             
             // Poll for payment status (check every 3 seconds, max 10 times)
             this.pollPaymentStatus(email || this.userEmail, 10);
+            cleanupUrlParams();
             return;
           } else {
             // Payment failed or not confirmed
@@ -2954,6 +3005,7 @@ class EventConflictFinder {
             if (paymentStatus === 'success') {
               // If we got success redirect but verification failed, still refresh to let server handle it
               this.showToast('Verifying payment... Refreshing page...', 'info');
+              cleanupUrlParams();
               setTimeout(() => {
                 window.location.href = window.location.pathname;
               }, 1500);
@@ -2963,22 +3015,7 @@ class EventConflictFinder {
         }
       }
       
-      // Clean up URL parameters - remove payment-related params
-      params.delete('payment');
-      params.delete('customer_session_token');
-      if (params.has('email')) {
-        params.delete('email');
-      }
-      
-      const polarParams = ['session_id', 'checkout_id', 'payment_intent', 'id'];
-      polarParams.forEach(param => {
-        if (params.has(param)) {
-          params.delete(param);
-        }
-      });
-      
-      const newUrl = `${window.location.pathname}${params.toString() ? `?${params.toString()}` : ''}`;
-      window.history.replaceState({}, document.title, newUrl);
+      cleanupUrlParams();
     } catch (error) {
       console.warn('Unable to process checkout status:', error);
     }
@@ -3036,35 +3073,38 @@ class EventConflictFinder {
 
   async verifyStoredPaymentStatus() {
     // Verify if we have a stored email
-    if (!this.userEmail) {
+    const storedEmail = this.userEmail || this.paywallState?.email || '';
+    if (!storedEmail || !storedEmail.trim()) {
       return;
     }
 
     try {
       // Verify with server - this will auto-check pending payments and update status
-      const status = await this.verifyPlanForEmail(this.userEmail);
+      const status = await this.verifyPlanForEmail(storedEmail);
       
+      // verifyPlanForEmail already updates localStorage, but ensure consistency
       if (status.planStatus === 'active') {
         // Plan is confirmed active, ensure state is correct
         this.persistPaywallState({
-          email: this.userEmail,
+          email: storedEmail.trim().toLowerCase(),
           unlimitedAccess: true,
           freeSearchCount: 0
         });
+        console.log('✅ Verified active plan for:', storedEmail);
       } else if (status.planStatus === 'pending') {
         // Status is still pending - server will check Polar API automatically
         // Keep current state but don't grant unlimited access yet
-        console.log('Payment status is pending, waiting for confirmation...');
+        console.log('⏳ Payment status is pending, waiting for confirmation...');
         this.persistPaywallState({
-          email: this.userEmail,
+          email: storedEmail.trim().toLowerCase(),
           unlimitedAccess: false,
           freeSearchCount: status.searchCount || this.freeSearchCount
         });
       } else {
-        // Plan is not active, reset state
-        console.warn('Stored payment status invalid, resetting paywall state');
+        // Plan is not active, reset state but keep email
+        console.warn('⚠️ Stored payment status invalid, resetting paywall state');
         this.persistPaywallState({
-          email: this.userEmail,
+          email: storedEmail.trim().toLowerCase(),
           unlimitedAccess: false,
           freeSearchCount: status.searchCount || this.freeSearchCount
         });
