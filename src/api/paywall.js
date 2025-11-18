@@ -69,14 +69,24 @@ function appendParams(baseUrl, params = {}) {
   }
 }
 
-function resolveRedirectUrls(req) {
+function resolveRedirectUrls(req, email = null) {
   const baseUrl = deriveFrontendUrl(req);
   const successBase = process.env.POLAR_SUCCESS_URL || `${baseUrl}?payment=success`;
   const cancelBase = process.env.POLAR_CANCEL_URL || `${baseUrl}?payment=cancelled`;
 
-  const successUrl = appendParams(successBase, {
+  const successParams = {
     payment: 'success'
-  });
+  };
+  
+  // Include email in success URL if provided (helps with automatic sign-in)
+  if (email && typeof email === 'string') {
+    const normalizedEmail = email.trim().toLowerCase();
+    if (normalizedEmail) {
+      successParams.email = normalizedEmail;
+    }
+  }
+
+  const successUrl = appendParams(successBase, successParams);
 
   const cancelUrl = appendParams(cancelBase, {
     payment: 'cancelled'
@@ -123,7 +133,7 @@ router.post('/checkout', async (req, res) => {
       return res.status(503).json({ error: 'Checkout disabled. Missing configuration.' });
     }
 
-    const { successUrl, cancelUrl } = resolveRedirectUrls(req);
+    const { successUrl, cancelUrl } = resolveRedirectUrls(req, normalizedEmail);
 
     const payload = {
       success_url: successUrl,

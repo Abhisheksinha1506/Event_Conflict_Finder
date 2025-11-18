@@ -2812,7 +2812,11 @@ class EventConflictFinder {
           unlimitedAccess: true,
           freeSearchCount: 0
         });
-        this.showToast('Now you can continue searching. Next time, just enter your email to continue.', 'success');
+        
+        // Explicitly ensure logout button is visible and user is signed in
+        this.updateLogoutVisibility();
+        
+        this.showToast('You are now signed in with unlimited searches!', 'success');
         this.hidePaywallModal();
         // Refresh the page state to ensure unlimited access is recognized
         this.hasUnlimitedAccess = true;
@@ -2935,8 +2939,44 @@ class EventConflictFinder {
       const params = new URLSearchParams(window.location.search);
       const paymentStatus = params.get('payment');
       const emailParam = params.get('email');
-      const storedEmail = this.userEmail;
-      const email = (emailParam || storedEmail || '').trim();
+      const checkoutId = params.get('checkout_id') || params.get('id') || params.get('session_id');
+      
+      // Try to get email from multiple sources
+      let email = (emailParam || this.userEmail || '').trim();
+      
+      // If no email but we have checkout ID, try to verify checkout to get email
+      if (!email && checkoutId && paymentStatus === 'success') {
+        try {
+          const response = await fetch('/api/paywall/verify-checkout', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ checkoutId })
+          });
+          
+          if (response.ok) {
+            const result = await response.json();
+            if (result.email) {
+              email = result.email.trim().toLowerCase();
+            }
+          }
+        } catch (error) {
+          console.warn('Could not verify checkout to get email:', error);
+        }
+      }
+      
+      // Fallback: try to get email from localStorage if still missing
+      if (!email) {
+        try {
+          const storedEmail = localStorage.getItem('ecf_user_email');
+          if (storedEmail) {
+            email = storedEmail.trim().toLowerCase();
+          }
+        } catch (error) {
+          console.warn('Could not read email from localStorage:', error);
+        }
+      }
 
       const cleanupUrlParams = () => {
         params.delete('payment');
@@ -2959,19 +2999,28 @@ class EventConflictFinder {
       if (paymentStatus === 'success' || paymentStatus === 'cancelled' || paymentStatus === 'failed') {
         // Verify payment status with server (will auto-check Polar API if pending)
         if (!email) {
-          this.showToast('Payment completed.', 'info');
+          this.showToast('Payment completed. Please sign in with your email to continue.', 'info');
+          cleanupUrlParams();
+          return;
         } else {
           try {
             const status = await this.verifyPlanForEmail(email);
           
           if (status.planStatus === 'active') {
-            // Payment confirmed - update state
+            // Payment confirmed - update state and ensure user is signed in
             this.persistPaywallState({
               email,
               unlimitedAccess: true,
               freeSearchCount: 0
             });
-            this.showToast('Payment confirmed! You now have unlimited searches.', 'success');
+            
+            // Explicitly ensure logout button is visible and user is signed in
+            this.updateLogoutVisibility();
+            
+            // Hide paywall modal if open
+            this.hidePaywallModal();
+            
+            this.showToast('Payment confirmed! You are now signed in with unlimited searches.', 'success');
             cleanupUrlParams();
             return;
           } else if (status.planStatus === 'pending') {
@@ -2981,6 +3030,7 @@ class EventConflictFinder {
               unlimitedAccess: false,
               freeSearchCount: status.searchCount || 0
             });
+            this.updateLogoutVisibility();
             this.showToast('Payment is being processed. Checking status...', 'info');
             
             // Poll for payment status (check every 3 seconds, max 10 times)
@@ -2994,6 +3044,7 @@ class EventConflictFinder {
               unlimitedAccess: false,
               freeSearchCount: status.searchCount || 0
             });
+            this.updateLogoutVisibility();
             
             if (paymentStatus === 'cancelled') {
               this.showToast('Payment was cancelled. Your search count remains unchanged. You can try again anytime.', 'info');
@@ -3042,17 +3093,22 @@ class EventConflictFinder {
         const status = await this.verifyPlanForEmail(email);
         
         if (status.planStatus === 'active') {
-          // Payment confirmed - update state and refresh
+          // Payment confirmed - update state and ensure user is signed in
           this.persistPaywallState({
             email: email,
             unlimitedAccess: true,
             freeSearchCount: 0
           });
-          this.showToast('Payment confirmed! Refreshing page...', 'success');
           
-          setTimeout(() => {
-            window.location.href = window.location.pathname;
-          }, 1500);
+          // Explicitly ensure logout button is visible and user is signed in
+          this.updateLogoutVisibility();
+          
+          // Hide paywall modal if open
+          this.hidePaywallModal();
+          
+          this.showToast('Payment confirmed! You are now signed in with unlimited searches.', 'success');
+          
+          // Don't refresh page - user is already signed in
           return;
         } else if (status.planStatus === 'pending') {
           // Still pending (legacy records only) - continue polling
