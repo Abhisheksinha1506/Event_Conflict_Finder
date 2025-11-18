@@ -1090,6 +1090,27 @@ class EventConflictFinder {
         <p><strong>Time:</strong> ${startDate.toLocaleString()} - ${endDate.toLocaleTimeString()}</p>
         <span class="source-badge ${event.source}">${event.source}</span>
       `;
+
+      if (event.source === 'ticketmaster' && event.url) {
+        const actionsContainer = document.createElement('div');
+        actionsContainer.className = 'event-actions';
+        const ticketmasterButton = document.createElement('button');
+        ticketmasterButton.type = 'button';
+        ticketmasterButton.className = 'ticketmaster-button';
+        ticketmasterButton.textContent = 'Buy on Ticketmaster';
+        ticketmasterButton.addEventListener('click', (buttonEvent) => {
+          buttonEvent.stopPropagation();
+          try {
+            const normalizedUrl = new URL(event.url);
+            window.open(normalizedUrl.toString(), '_blank', 'noopener');
+          } catch (openError) {
+            console.error('Unable to open Ticketmaster link:', openError);
+            this.showToast('Unable to open Ticketmaster link for this event.', 'error');
+          }
+        });
+        actionsContainer.appendChild(ticketmasterButton);
+        eventItem.appendChild(actionsContainer);
+      }
       
       // Add click handler
       eventItem.addEventListener('click', () => this.selectEvent(event.id));

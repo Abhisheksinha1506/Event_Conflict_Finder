@@ -306,6 +306,37 @@
     color: white;
 }
 
+.event-actions {
+    margin-top: 1rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+}
+
+.ticketmaster-button {
+    border: none;
+    background: linear-gradient(135deg, #026cdf 0%, #0152b3 100%);
+    color: white;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-size: 0.7rem;
+    font-weight: 600;
+    padding: 0.65rem 1.25rem;
+    border-radius: 999px;
+    cursor: pointer;
+    transition: background 0.2s ease, transform 0.2s ease;
+}
+
+.ticketmaster-button:hover {
+    background: linear-gradient(135deg, #0152b3 0%, #013f8a 100%);
+    transform: translateY(-1px);
+}
+
+.ticketmaster-button:focus-visible {
+    outline: 2px solid #93c5fd;
+    outline-offset: 2px;
+}
+
 /* Conflict Items */
 .conflict-item {
     background: white;

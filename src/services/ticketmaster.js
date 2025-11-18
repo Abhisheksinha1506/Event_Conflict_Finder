@@ -18,6 +18,11 @@ class TicketmasterService {
     const venue = eventData._embedded?.venues?.[0] || {};
     const dates = eventData.dates || {};
     const startDate = dates.start || {};
+    const eventUrl = this.getPublicEventUrl(eventData);
+
+    if (!eventUrl) {
+      return null;
+    }
     
     // Calculate end time (estimate 2 hours if not provided)
     let endTime = dates.end?.dateTime || dates.end?.localDate;
@@ -39,8 +44,42 @@ class TicketmasterService {
         address: venue.address?.line1 || venue.address || ''
       },
       source: 'ticketmaster',
-      url: eventData.url || eventData._links?.self?.href || `https://www.ticketmaster.com/event/${eventData.id}`
+      url: eventUrl
     };
+  }
+
+  getPublicEventUrl(eventData) {
+    const candidateUrls = [];
+
+    if (typeof eventData.url === 'string') {
+      candidateUrls.push(eventData.url.trim());
+    }
+
+    if (typeof eventData._links?.web?.href === 'string') {
+      candidateUrls.push(eventData._links.web.href.trim());
+    }
+
+    for (const url of candidateUrls) {
+      if (this.isValidTicketmasterUrl(url)) {
+        return url;
+      }
+    }
+
+    return null;
+  }
+
+  isValidTicketmasterUrl(url) {
+    if (!url || typeof url !== 'string') {
+      return false;
+    }
+
+    const trimmed = url.trim();
+
+    if (!/^https?:\/\//i.test(trimmed)) {
+      return false;
+    }
+
+    return trimmed.includes('ticketmaster');
   }
 
   async getEventsByLocation(lat, lon, radius = 10, userId = 'default') {
@@ -164,6 +203,10 @@ class TicketmasterService {
       const transformedEvents = events
         .map(event => this.transformEvent(event))
         .filter(event => {
+          if (!event) {
+            return false;
+          }
+
           // Filter out events without valid venue coordinates
           return event.venue && event.venue.lat && event.venue.lon && event.start && event.end;
         });
