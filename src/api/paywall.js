@@ -5,17 +5,33 @@ const paywallService = require('../utils/paywallService');
 
 const router = express.Router();
 
-function deriveFrontendUrl() {
+function deriveFrontendUrl(req) {
   if (process.env.FRONTEND_URL) {
     return process.env.FRONTEND_URL;
   }
 
+  // Prefer explicit Origin header when present (e.g. browsers making same-origin requests)
+  if (req?.headers?.origin) {
+    return req.headers.origin;
+  }
+
+  // Fall back to forwarded host/proto (Vercel / proxies)
+  const forwardedHost = req?.headers?.['x-forwarded-host'];
+  if (forwardedHost) {
+    const forwardedProto = req?.headers?.['x-forwarded-proto'] || 'https';
+    return `${forwardedProto}://${forwardedHost}`;
+  }
+
   if (process.env.VERCEL_URL) {
-    // Vercel provides the hostname without protocol
     const host = process.env.VERCEL_URL.startsWith('http')
       ? process.env.VERCEL_URL
       : `https://${process.env.VERCEL_URL}`;
     return host;
+  }
+
+  if (req?.headers?.host) {
+    const protocol = req?.protocol || req?.headers?.['x-forwarded-proto'] || 'http';
+    return `${protocol}://${req.headers.host}`;
   }
 
   return 'http://localhost:3000';
@@ -26,9 +42,6 @@ const POLAR_API_KEY = process.env.POLAR_API_KEY;
 const POLAR_PRODUCT_ID = process.env.POLAR_PRODUCT_ID;
 const POLAR_PRODUCT_PRICE_ID = process.env.POLAR_PRODUCT_PRICE_ID;
 const POLAR_PAYMENT_PROCESSOR = process.env.POLAR_PAYMENT_PROCESSOR || 'stripe';
-const FRONTEND_BASE_URL = deriveFrontendUrl();
-const POLAR_SUCCESS_URL = process.env.POLAR_SUCCESS_URL || `${FRONTEND_BASE_URL}?payment=success`;
-const POLAR_CANCEL_URL = process.env.POLAR_CANCEL_URL || `${FRONTEND_BASE_URL}?payment=cancelled`;
 const POLAR_WEBHOOK_SECRET = process.env.POLAR_WEBHOOK_SECRET;
 
 function appendParams(baseUrl, params = {}) {
@@ -54,6 +67,23 @@ function appendParams(baseUrl, params = {}) {
     }
     return `${baseUrl}${baseUrl.includes('?') ? '&' : '?'}${query}`;
   }
+}
+
+function resolveRedirectUrls(req, email) {
+  const baseUrl = deriveFrontendUrl(req);
+  const successBase = process.env.POLAR_SUCCESS_URL || `${baseUrl}?payment=success`;
+  const cancelBase = process.env.POLAR_CANCEL_URL || `${baseUrl}?payment=cancelled`;
+
+  const successUrl = appendParams(successBase, {
+    payment: 'success',
+    email: email || undefined
+  });
+
+  const cancelUrl = appendParams(cancelBase, {
+    payment: 'cancelled'
+  });
+
+  return { successUrl, cancelUrl };
 }
 
 function paywallConfigured() {
@@ -94,14 +124,7 @@ router.post('/checkout', async (req, res) => {
       return res.status(503).json({ error: 'Checkout disabled. Missing configuration.' });
     }
 
-    const successUrl = appendParams(POLAR_SUCCESS_URL, {
-      payment: 'success',
-      email: normalizedEmail || undefined
-    });
-
-    const cancelUrl = appendParams(POLAR_CANCEL_URL, {
-      payment: 'cancelled'
-    });
+    const { successUrl, cancelUrl } = resolveRedirectUrls(req, normalizedEmail);
 
     const payload = {
       success_url: successUrl,

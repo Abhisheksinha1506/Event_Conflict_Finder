@@ -2839,21 +2839,19 @@ class EventConflictFinder {
     try {
       const emailInput = document.getElementById('paywall-signin-email');
       const checkoutEmail = (emailInput?.value || this.userEmail || '').trim().toLowerCase();
+      const payload = checkoutEmail ? { email: checkoutEmail } : {};
 
-      if (!checkoutEmail) {
-        this.setPaywallMessage('Please enter your email before continuing to checkout.', 'warning');
-        emailInput?.focus();
-        return;
+      if (checkoutEmail) {
+        this.persistPaywallState({ email: checkoutEmail });
       }
 
-      this.persistPaywallState({ email: checkoutEmail });
       this.setPaywallMessage('Redirecting to secure checkout...', 'info');
       const response = await fetch('/api/paywall/checkout', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ email: checkoutEmail })
+        body: JSON.stringify(payload)
       });
 
       if (!response.ok) {
