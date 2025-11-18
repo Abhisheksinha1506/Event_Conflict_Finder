@@ -143,31 +143,26 @@
                     You've reached your free search limit. To continue, sign in with an email that already purchased the unlimited plan or create a new account to buy it now.
                 </p>
 
-                <div class="paywall-tabs mb-4">
-                    <button id="paywall-tab-signin" class="paywall-tab active" type="button">Sign in</button>
-                    <button id="paywall-tab-signup" class="paywall-tab" type="button">Create new user</button>
-                </div>
-
-                <div id="paywall-signin-panel">
+                <div class="paywall-section">
+                    <h3 class="paywall-section__title">Already purchased?</h3>
                     <form id="paywall-signin-form" class="paywall-form">
                         <label for="paywall-signin-email" class="paywall-label">Email address</label>
                         <input id="paywall-signin-email" type="email" required class="paywall-input" placeholder="you@example.com" />
-                        <button type="submit" class="paywall-primary-btn mt-4 w-full">Continue</button>
+                        <button type="submit" class="paywall-primary-btn mt-4 w-full">Unlock access</button>
                     </form>
                 </div>
 
-                <div id="paywall-signup-panel" class="hidden">
-                    <form id="paywall-signup-form" class="paywall-form">
-                        <label for="paywall-signup-email" class="paywall-label">Email address</label>
-                        <input id="paywall-signup-email" type="email" required class="paywall-input" placeholder="you@example.com" />
-                        <button type="submit" class="paywall-secondary-btn mt-4 w-full">Buy unlimited plan</button>
-                    </form>
-                    <p class="text-xs text-gray-500 mt-3 leading-relaxed">
-                        You'll be redirected to our payment provider (Polar) to securely complete your purchase. After payment you'll be sent back here automatically.
+                <div class="paywall-divider" role="presentation"></div>
+
+                <div class="paywall-section">
+                    <h3 class="paywall-section__title">Need unlimited searches?</h3>
+                    <p class="text-sm text-gray-600 leading-relaxed mb-4">
+                        Start a secure checkout and enter your email there. We'll activate unlimited searches automatically once payment completes.
                     </p>
+                    <button id="paywall-checkout-btn" class="paywall-secondary-btn w-full">Buy unlimited plan</button>
                 </div>
 
-                <div id="paywall-message" class="paywall-message mt-4" data-variant="info"></div>
+                <div id="paywall-message" class="paywall-message mt-6" data-variant="info"></div>
             </div>
             <div class="paywall-panel__footer">
                 <p class="text-xs text-gray-500">

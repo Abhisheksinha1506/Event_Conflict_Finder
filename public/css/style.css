@@ -757,34 +757,6 @@
     padding: 1.5rem;
 }
 
-.paywall-tabs {
-    display: inline-flex;
-    background: #f3f4f6;
-    border-radius: 999px;
-    padding: 4px;
-    gap: 0.5rem;
-}
-
-.paywall-tab {
-    border: none;
-    background: transparent;
-    padding: 0.45rem 1.25rem;
-    border-radius: 999px;
-    font-size: 0.75rem;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    font-weight: 600;
-    color: #6b7280;
-    cursor: pointer;
-    transition: all 0.2s ease;
-}
-
-.paywall-tab.active {
-    background: white;
-    color: #111827;
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
-}
-
 .paywall-form {
     display: flex;
     flex-direction: column;
@@ -839,6 +811,24 @@
 
 .paywall-secondary-btn:hover {
     background: #ea580c;
+}
+
+.paywall-section {
+    padding: 1rem 0;
+}
+
+.paywall-section__title {
+    font-size: 0.85rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #111827;
+    margin-bottom: 0.75rem;
+    font-weight: 600;
+}
+
+.paywall-divider {
+    border-top: 1px solid #e5e7eb;
+    margin: 1.25rem 0;
 }
 
 .paywall-message {

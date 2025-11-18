@@ -62,7 +62,6 @@ class EventConflictFinder {
     this.hasUnlimitedAccess = this.paywallState.unlimitedAccess;
     this.paywallModal = null;
     this.paywallMessageElement = null;
-    this.paywallActiveTab = 'signin';
     
     // Supported countries with strong/variable coverage
     this.supportedCountries = [
@@ -2694,24 +2693,15 @@ class EventConflictFinder {
       closeBtn.addEventListener('click', () => this.hidePaywallModal());
     }
 
-    const tabSignIn = document.getElementById('paywall-tab-signin');
-    const tabSignUp = document.getElementById('paywall-tab-signup');
-    if (tabSignIn && tabSignUp) {
-      tabSignIn.addEventListener('click', () => this.switchPaywallTab('signin'));
-      tabSignUp.addEventListener('click', () => this.switchPaywallTab('signup'));
-    }
-
     const signInForm = document.getElementById('paywall-signin-form');
     if (signInForm) {
       signInForm.addEventListener('submit', (event) => this.handleSignInSubmit(event));
     }
 
-    const signupForm = document.getElementById('paywall-signup-form');
-    if (signupForm) {
-      signupForm.addEventListener('submit', (event) => this.handleSignupSubmit(event));
+    const checkoutBtn = document.getElementById('paywall-checkout-btn');
+    if (checkoutBtn) {
+      checkoutBtn.addEventListener('click', () => this.startCheckout());
     }
-
-    this.switchPaywallTab(this.paywallActiveTab);
   }
 
   showPaywallModal(reason = 'limit') {
@@ -2724,7 +2714,6 @@ class EventConflictFinder {
       this.paywallModalCopy.textContent = `${message} To continue, sign in with an email that has an active plan or purchase the unlimited plan.`;
     }
 
-    this.switchPaywallTab('signin');
     this.paywallModal.classList.remove('hidden');
     document.body.style.overflow = 'hidden';
     this.setPaywallMessage('');
@@ -2740,30 +2729,6 @@ class EventConflictFinder {
     if (!this.paywallMessageElement) return;
     this.paywallMessageElement.textContent = message || '';
     this.paywallMessageElement.setAttribute('data-variant', type);
-  }
-
-  switchPaywallTab(tab) {
-    this.paywallActiveTab = tab;
-    const signinPanel = document.getElementById('paywall-signin-panel');
-    const signupPanel = document.getElementById('paywall-signup-panel');
-    const tabSignIn = document.getElementById('paywall-tab-signin');
-    const tabSignUp = document.getElementById('paywall-tab-signup');
-
-    if (signinPanel && signupPanel && tabSignIn && tabSignUp) {
-      if (tab === 'signin') {
-        signinPanel.classList.remove('hidden');
-        signupPanel.classList.add('hidden');
-        tabSignIn.classList.add('active');
-        tabSignUp.classList.remove('active');
-      } else {
-        signinPanel.classList.add('hidden');
-        signupPanel.classList.remove('hidden');
-        tabSignIn.classList.remove('active');
-        tabSignUp.classList.add('active');
-      }
-    }
-
-    this.setPaywallMessage('');
   }
 
   async handleSignInSubmit(event) {
@@ -2804,32 +2769,6 @@ class EventConflictFinder {
     }
   }
 
-  async handleSignupSubmit(event) {
-    event.preventDefault();
-    const emailInput = document.getElementById('paywall-signup-email');
-    if (!emailInput) return;
-
-    const email = emailInput.value.trim();
-    if (!email) {
-      this.setPaywallMessage('Please enter your email address.', 'warning');
-      return;
-    }
-
-    try {
-      this.setPaywallMessage('Creating checkout session...', 'info');
-      const checkout = await this.startCheckoutForEmail(email);
-      if (checkout?.checkoutUrl) {
-        this.persistPaywallState({ email });
-        window.location.href = checkout.checkoutUrl;
-      } else {
-        this.setPaywallMessage('Unable to start checkout. Please try again.', 'error');
-      }
-    } catch (error) {
-      console.error('Checkout initiation failed:', error);
-      this.setPaywallMessage(error.message || 'Unable to start checkout.', 'error');
-    }
-  }
-
   async verifyPlanForEmail(email) {
     const response = await fetch('/api/paywall/status', {
       method: 'POST',
@@ -2846,26 +2785,42 @@ class EventConflictFinder {
     const data = await response.json();
     if (data.freeSearchLimit) {
       this.freeSearchLimit = data.freeSearchLimit;
-      this.persistPaywallState({ freeSearchCount: data.searchCount || 0 });
+      const updates = { freeSearchCount: data.searchCount || 0 };
+      if (data.planStatus === 'active' && email) {
+        updates.email = email;
+        updates.unlimitedAccess = true;
+      }
+      this.persistPaywallState(updates);
     }
     return data;
   }
 
-  async startCheckoutForEmail(email) {
-    const response = await fetch('/api/paywall/checkout', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ email })
-    });
+  async startCheckout() {
+    try {
+      this.setPaywallMessage('Redirecting to secure checkout...', 'info');
+      const response = await fetch('/api/paywall/checkout', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({})
+      });
 
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      throw new Error(errorData.error || 'Checkout failed');
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || 'Checkout failed');
+      }
+
+      const checkout = await response.json();
+      if (checkout?.checkoutUrl) {
+        window.location.href = checkout.checkoutUrl;
+      } else {
+        throw new Error('Checkout link missing. Please try again.');
+      }
+    } catch (error) {
+      console.error('Checkout initiation failed:', error);
+      this.setPaywallMessage(error.message || 'Unable to start checkout.', 'error');
     }
-
-    return await response.json();
   }
 
   handleServerPaywallLimit(payload = {}) {
@@ -2894,31 +2849,31 @@ class EventConflictFinder {
     try {
       const params = new URLSearchParams(window.location.search);
       const paymentStatus = params.get('payment');
-      const email = params.get('email') || this.userEmail;
+      const emailParam = params.get('email');
+      const storedEmail = this.userEmail;
+      const email = (emailParam || storedEmail || '').trim();
 
       if (paymentStatus === 'success' || paymentStatus === 'cancelled' || paymentStatus === 'failed') {
         // Verify payment status with server (will auto-check Polar API if pending)
-        try {
-          const status = await this.verifyPlanForEmail(email || this.userEmail);
+        if (!email) {
+          this.showToast('Payment completed. Enter the email you used at checkout to unlock unlimited searches.', 'info');
+        } else {
+          try {
+            const status = await this.verifyPlanForEmail(email);
           
           if (status.planStatus === 'active') {
-            // Payment confirmed - update state and refresh
+            // Payment confirmed - update state
             this.persistPaywallState({
-              email: email || this.userEmail,
+              email,
               unlimitedAccess: true,
               freeSearchCount: 0
             });
-            this.showToast('Payment confirmed! Refreshing page...', 'success');
-            
-            // Clean URL and refresh after short delay
-            setTimeout(() => {
-              window.location.href = window.location.pathname;
-            }, 1500);
+            this.showToast('Payment confirmed! You now have unlimited searches.', 'success');
             return;
           } else if (status.planStatus === 'pending') {
             // Payment is still processing - poll for status update
             this.persistPaywallState({
-              email: email || this.userEmail,
+              email,
               unlimitedAccess: false,
               freeSearchCount: status.searchCount || 0
             });
@@ -2942,19 +2897,20 @@ class EventConflictFinder {
             } else {
               this.showToast('Payment verification in progress. Please wait...', 'info');
               // Poll for status update
-              this.pollPaymentStatus(email || this.userEmail, 10);
+              this.pollPaymentStatus(email, 10);
             }
           }
-        } catch (error) {
-          console.error('Error verifying payment status:', error);
-          
-          if (paymentStatus === 'success') {
-            // If we got success redirect but verification failed, still refresh to let server handle it
-            this.showToast('Verifying payment... Refreshing page...', 'info');
-            setTimeout(() => {
-              window.location.href = window.location.pathname;
-            }, 1500);
-            return;
+          } catch (error) {
+            console.error('Error verifying payment status:', error);
+            
+            if (paymentStatus === 'success') {
+              // If we got success redirect but verification failed, still refresh to let server handle it
+              this.showToast('Verifying payment... Refreshing page...', 'info');
+              setTimeout(() => {
+                window.location.href = window.location.pathname;
+              }, 1500);
+              return;
+            }
           }
         }
       }

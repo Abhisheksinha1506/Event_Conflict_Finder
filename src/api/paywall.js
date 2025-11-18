@@ -14,6 +14,31 @@ const POLAR_SUCCESS_URL = process.env.POLAR_SUCCESS_URL || process.env.FRONTEND_
 const POLAR_CANCEL_URL = process.env.POLAR_CANCEL_URL || process.env.FRONTEND_URL || 'http://localhost:3000/?payment=cancelled';
 const POLAR_WEBHOOK_SECRET = process.env.POLAR_WEBHOOK_SECRET;
 
+function appendParams(baseUrl, params = {}) {
+  if (!baseUrl) {
+    return baseUrl;
+  }
+
+  try {
+    const url = new URL(baseUrl);
+    Object.entries(params).forEach(([key, value]) => {
+      if (value !== undefined && value !== null && value !== '') {
+        url.searchParams.set(key, value);
+      }
+    });
+    return url.toString();
+  } catch (error) {
+    const query = Object.entries(params)
+      .filter(([, value]) => value !== undefined && value !== null && value !== '')
+      .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`)
+      .join('&');
+    if (!query) {
+      return baseUrl;
+    }
+    return `${baseUrl}${baseUrl.includes('?') ? '&' : '?'}${query}`;
+  }
+}
+
 function paywallConfigured() {
   return !!(
     POLAR_API_KEY &&
@@ -46,20 +71,30 @@ router.post('/status', async (req, res) => {
 router.post('/checkout', async (req, res) => {
   try {
     const { email } = req.body || {};
-    if (!email) {
-      return res.status(400).json({ error: 'Email is required' });
-    }
+    const normalizedEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
 
     if (!paywallConfigured()) {
       return res.status(503).json({ error: 'Checkout disabled. Missing configuration.' });
     }
 
+    const successUrl = appendParams(POLAR_SUCCESS_URL, {
+      payment: 'success',
+      email: normalizedEmail || undefined
+    });
+
+    const cancelUrl = appendParams(POLAR_CANCEL_URL, {
+      payment: 'cancelled'
+    });
+
     const payload = {
-      customer_email: email,
-      success_url: `${POLAR_SUCCESS_URL}${POLAR_SUCCESS_URL.includes('?') ? '&' : '?'}email=${encodeURIComponent(email)}&payment=success`,
-      cancel_url: POLAR_CANCEL_URL,
+      success_url: successUrl,
+      cancel_url: cancelUrl,
       payment_processor: POLAR_PAYMENT_PROCESSOR
     };
+
+    if (normalizedEmail) {
+      payload.customer_email = normalizedEmail;
+    }
 
     if (POLAR_PRODUCT_PRICE_ID) {
       payload.product_price_id = POLAR_PRODUCT_PRICE_ID;
@@ -99,7 +134,7 @@ router.post('/checkout', async (req, res) => {
     const checkoutId = checkout?.data?.id || checkout?.id;
     const checkoutUrl = checkout?.data?.attributes?.url || checkout?.url;
 
-    await paywallService.markCheckoutInitiated(email, checkoutId);
+    await paywallService.markCheckoutInitiated(normalizedEmail, checkoutId);
 
     res.json({
       checkoutId,
