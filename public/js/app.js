@@ -2758,19 +2758,40 @@ class EventConflictFinder {
     }
   }
 
-  showPaywallModal(reason = 'limit') {
+  showPaywallModal(reason = 'limit', options = {}) {
     if (!this.paywallModal) return;
 
-    const message = reason === 'limit'
-      ? `You've reached your ${this.freeSearchLimit} free searches.`
-      : 'Free searches are locked for this account.';
+    const copyMap = {
+      limit: `You've reached your ${this.freeSearchLimit} free searches. To continue, sign in with an email that has an active plan or purchase the unlimited plan.`,
+      server: 'Free searches are locked for this account. Sign in with an active plan or purchase unlimited access to continue.',
+      'payment-success': 'Payment confirmed! Use the email form below to sync unlimited access on this device or close this panel to keep searching.',
+      'payment-failed': 'Your payment did not complete. You can try again with a different email or restart checkout below.',
+      'payment-cancelled': 'Your checkout was cancelled. You can re-enter your email or restart checkout at any time.',
+      default: 'Sign in with an email that has an active plan or purchase unlimited access to continue.'
+    };
+
+    const modalCopy = options.copy || copyMap[reason] || copyMap.default;
     if (this.paywallModalCopy) {
-      this.paywallModalCopy.textContent = `${message} To continue, sign in with an email that has an active plan or purchase the unlimited plan.`;
+      this.paywallModalCopy.textContent = modalCopy;
     }
 
     this.paywallModal.classList.remove('hidden');
     document.body.style.overflow = 'hidden';
-    this.setPaywallMessage('');
+
+    const emailInput = document.getElementById('paywall-signin-email');
+    if (options.prefillEmail && emailInput) {
+      emailInput.value = options.prefillEmail;
+    }
+
+    if (options.focusEmail && emailInput) {
+      setTimeout(() => emailInput.focus(), 0);
+    }
+
+    if (options.message) {
+      this.setPaywallMessage(options.message, options.variant || 'info');
+    } else {
+      this.setPaywallMessage('');
+    }
   }
 
   hidePaywallModal() {
@@ -2999,7 +3020,28 @@ class EventConflictFinder {
       if (paymentStatus === 'success' || paymentStatus === 'cancelled' || paymentStatus === 'failed') {
         // Verify payment status with server (will auto-check Polar API if pending)
         if (!email) {
-          this.showToast('Payment completed. Please sign in with your email to continue.', 'info');
+          const modalReason = paymentStatus === 'failed'
+            ? 'payment-failed'
+            : paymentStatus === 'cancelled'
+              ? 'payment-cancelled'
+              : 'payment-success';
+          const variant = paymentStatus === 'failed'
+            ? 'error'
+            : paymentStatus === 'cancelled'
+              ? 'info'
+              : 'success';
+          const modalMessage = paymentStatus === 'failed'
+            ? 'Payment failed. Enter your email below to try again or restart checkout.'
+            : paymentStatus === 'cancelled'
+              ? 'Payment was cancelled. Enter your email to continue or start a new checkout.'
+              : 'Payment completed. Enter your email below to unlock unlimited searches on this device.';
+
+          this.showPaywallModal(modalReason, {
+            message: modalMessage,
+            variant,
+            focusEmail: true
+          });
+          this.showToast(modalMessage, variant);
           cleanupUrlParams();
           return;
         } else {
@@ -3017,9 +3059,12 @@ class EventConflictFinder {
             // Explicitly ensure logout button is visible and user is signed in
             this.updateLogoutVisibility();
             
-            // Hide paywall modal if open
-            this.hidePaywallModal();
-            
+            this.showPaywallModal('payment-success', {
+              message: 'Payment confirmed! You now have unlimited searches on this device.',
+              variant: 'success',
+              prefillEmail: email,
+              focusEmail: false
+            });
             this.showToast('Payment confirmed! You are now signed in with unlimited searches.', 'success');
             cleanupUrlParams();
             return;
@@ -3047,8 +3092,20 @@ class EventConflictFinder {
             this.updateLogoutVisibility();
             
             if (paymentStatus === 'cancelled') {
+              this.showPaywallModal('payment-cancelled', {
+                message: 'Payment was cancelled. You can re-enter your email or restart checkout below.',
+                variant: 'info',
+                prefillEmail: email,
+                focusEmail: true
+              });
               this.showToast('Payment was cancelled. Your search count remains unchanged. You can try again anytime.', 'info');
             } else if (paymentStatus === 'failed') {
+              this.showPaywallModal('payment-failed', {
+                message: 'Payment failed. Your search count has not been reset. Try again or contact support.',
+                variant: 'error',
+                prefillEmail: email,
+                focusEmail: true
+              });
               this.showToast('Payment failed. Your search count has not been reset. Please try again or contact support.', 'error');
             } else {
               this.showToast('Payment verification in progress. Please wait...', 'info');
