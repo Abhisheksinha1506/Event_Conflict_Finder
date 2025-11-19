@@ -6,6 +6,19 @@ A comprehensive event intelligence platform that identifies scheduling conflicts
 
 **Event Conflict Finder** aggregates data from Ticketmaster and Bandsintown APIs to prevent double-bookings, venue overcrowding, and audience fragmentation. Features Redis caching, rate limiting, and request queuing to handle unlimited concurrent users.
 
+> 📘 Looking for a deep-dive? See [`COMPREHENSIVE_ANALYSIS.md`](./COMPREHENSIVE_ANALYSIS.md) for a detailed architectural walkthrough of Phase 1.
+
+## ✅ Phase 1 Deliverables
+
+- **Full-stack prototype** with Node/Express backend and Leaflet-powered frontend
+- **Multi-source aggregation** from Ticketmaster + Bandsintown with standardized event model
+- **Conflict intelligence engine** with duplicate filtering, venue proximity, and severity scoring
+- **Operational safeguards**: Redis caching, multi-level rate limiting, automatic request queuing
+- **Freemium paywall** backed by Supabase + Polar with enhanced modal flow:
+  - Users now see the paywall modal immediately after checkout success, cancellation, or failure with the appropriate message, email sign-in form, and “Buy unlimited plan” CTA so they can recover without refreshing.
+
+These deliverables complete Phase 1’s goal of validating the conflict-detection experience end-to-end while collecting product telemetry for future iterations.
+
 ## ✨ Features
 
 ### Backend
