@@ -29,6 +29,8 @@
 
 class EventConflictFinder {
   constructor() {
+    this.themeStorageKey = 'ecf_theme_preference';
+    this.currentTheme = this.loadThemePreference();
     this.map = null;
     this.events = [];
     this.conflicts = [];
@@ -56,6 +58,11 @@ class EventConflictFinder {
     this.normalSuggestionDebounceMs = 300;
     this.lastSuggestionInputTime = 0;
     this.paywallState = this.loadPaywallState();
+    // Ensure free search limit is at least 5
+    if (!this.paywallState.freeSearchLimit || this.paywallState.freeSearchLimit < 5) {
+      this.paywallState.freeSearchLimit = 5;
+      this.persistPaywallState({ freeSearchLimit: 5 });
+    }
     this.freeSearchLimit = this.paywallState.freeSearchLimit;
     this.freeSearchCount = this.paywallState.freeSearchCount;
     // Normalize email to lowercase and ensure it's set
@@ -70,6 +77,11 @@ class EventConflictFinder {
     this.logoutButton = null;
     this.paywallModal = null;
     this.paywallMessageElement = null;
+    this.searchFilters = {
+      startDate: null,
+      endDate: null,
+      venueRadiusKm: null
+    };
     
     // Supported countries with strong/variable coverage
     this.supportedCountries = [
@@ -153,10 +165,10 @@ class EventConflictFinder {
 
     // Store current tile layer
     this.currentTileLayer = null;
-    this.currentTheme = 'light'; // Default theme
 
     // Initialize with light theme
-    this.switchMapTheme('light');
+    const themeToApply = this.currentTheme || 'light';
+    this.switchMapTheme(themeToApply);
 
     // Invalidate map size after a short delay to ensure container is rendered
     setTimeout(() => {
@@ -199,6 +211,11 @@ class EventConflictFinder {
 
   switchMapTheme(theme) {
     this.currentTheme = theme;
+    this.saveThemePreference(theme);
+    
+    if (!this.map) {
+      return;
+    }
     
     // Remove existing tile layer
     if (this.currentTileLayer) {
@@ -271,6 +288,12 @@ class EventConflictFinder {
     const themeToggleTrack = document.getElementById('theme-toggle-track');
     
     if (themeToggleInput) {
+      themeToggleInput.checked = this.currentTheme === 'dark';
+      themeToggleInput.setAttribute('data-theme', this.currentTheme);
+      if (themeToggleTrack) {
+        themeToggleTrack.setAttribute('data-theme', this.currentTheme);
+      }
+
       themeToggleInput.addEventListener('change', () => {
         const newTheme = themeToggleInput.checked ? 'dark' : 'light';
         this.switchMapTheme(newTheme);
@@ -389,6 +412,107 @@ class EventConflictFinder {
         this.showSuggestions();
       }
     });
+
+    // Handle scroll on mobile to reposition dropdown
+    let scrollTimeout;
+    const handleScroll = () => {
+      const suggestionsContainer = document.getElementById('location-suggestions');
+      if (suggestionsContainer && !suggestionsContainer.classList.contains('hidden')) {
+        const isMobile = window.matchMedia('(max-width: 768px)').matches;
+        if (isMobile) {
+          clearTimeout(scrollTimeout);
+          scrollTimeout = setTimeout(() => {
+            this.positionSuggestionDropdown();
+          }, 50);
+        }
+      }
+    };
+    window.addEventListener('scroll', handleScroll, { passive: true });
+    document.addEventListener('scroll', handleScroll, { passive: true });
+    
+    // Handle orientation change on mobile
+    window.addEventListener('orientationchange', () => {
+      const suggestionsContainer = document.getElementById('location-suggestions');
+      if (suggestionsContainer && !suggestionsContainer.classList.contains('hidden')) {
+        // Wait for orientation change to complete
+        setTimeout(() => {
+          this.positionSuggestionDropdown();
+        }, 100);
+      }
+    });
+  }
+
+  loadThemePreference() {
+    try {
+      const storedValue = localStorage.getItem(this.themeStorageKey);
+      if (storedValue === 'dark' || storedValue === 'light') {
+        return storedValue;
+      }
+    } catch (error) {
+      console.warn('Theme preference unavailable:', error.message);
+    }
+    return 'light';
+  }
+
+  saveThemePreference(theme) {
+    try {
+      localStorage.setItem(this.themeStorageKey, theme);
+    } catch (error) {
+      console.warn('Unable to persist theme preference:', error.message);
+    }
+  }
+
+  getFiltersFromInputs() {
+    const startInput = document.getElementById('startDate');
+    const endInput = document.getElementById('endDate');
+    const venueRadiusInput = document.getElementById('venueRadiusKm');
+
+    const startDate = startInput && startInput.value ? startInput.value : null;
+    const endDate = endInput && endInput.value ? endInput.value : null;
+    const venueRadiusValue = venueRadiusInput && venueRadiusInput.value
+      ? parseFloat(venueRadiusInput.value)
+      : 1;
+
+    const normalizedRadius = Number.isFinite(venueRadiusValue) ? venueRadiusValue : 1;
+    const isDefaultRadius = Math.abs(normalizedRadius - 1) < 0.001;
+
+    return {
+      startDate: startDate || null,
+      endDate: endDate || null,
+      venueRadiusKm: isDefaultRadius ? null : normalizedRadius
+    };
+  }
+
+  validateDateRangeFilters(filters) {
+    if (filters.startDate && filters.endDate) {
+      const start = Date.parse(filters.startDate);
+      const end = Date.parse(filters.endDate);
+      if (!Number.isNaN(start) && !Number.isNaN(end) && end < start) {
+        alert('End date must be on or after the start date');
+        return false;
+      }
+    }
+    return true;
+  }
+
+  buildEventSearchQuery(lat, lon, radius, filters = {}) {
+    const params = new URLSearchParams({
+      lat: lat.toString(),
+      lon: lon.toString(),
+      radius: radius.toString()
+    });
+
+    if (filters.startDate) {
+      params.append('startDate', filters.startDate);
+    }
+    if (filters.endDate) {
+      params.append('endDate', filters.endDate);
+    }
+    if (filters.venueRadiusKm !== undefined && filters.venueRadiusKm !== null) {
+      params.append('venueRadiusKm', filters.venueRadiusKm.toString());
+    }
+
+    return params.toString();
   }
 
   async searchEvents() {
@@ -396,11 +520,18 @@ class EventConflictFinder {
     const location = document.getElementById('location').value.trim();
     const radius = parseInt(document.getElementById('radius').value) || 25;
     const timeBuffer = parseInt(document.getElementById('timeBuffer').value) || 30;
+    const filters = this.getFiltersFromInputs();
 
     if (!location) {
       alert('Please enter a location');
       return;
     }
+
+    if (!this.validateDateRangeFilters(filters)) {
+      return;
+    }
+
+    this.searchFilters = filters;
 
     // Hide suggestions when searching
     this.hideSuggestions();
@@ -452,7 +583,8 @@ class EventConflictFinder {
       }
 
       // Fetch events from API
-      const response = await fetch(`/api/events/search?lat=${coords.lat}&lon=${coords.lng}&radius=${radius}`, {
+      const query = this.buildEventSearchQuery(coords.lat, coords.lng, radius, filters);
+      const response = await fetch(`/api/events/search?${query}`, {
         headers
       });
 
@@ -480,7 +612,7 @@ class EventConflictFinder {
       this.displayEvents();
 
       // Detect conflicts
-      await this.detectConflicts(timeBuffer);
+      await this.detectConflicts(timeBuffer, filters);
 
       if (!this.hasUnlimitedAccess) {
         this.incrementFreeSearchCount();
@@ -505,7 +637,8 @@ class EventConflictFinder {
       this.logPerformance('searchEvents', perfStart, {
         eventsReturned: this.events.length,
         radius,
-        timeBuffer
+        timeBuffer,
+        venueRadiusKm: filters.venueRadiusKm
       });
     }
   }
@@ -776,7 +909,9 @@ class EventConflictFinder {
           headers['X-User-Email'] = this.userEmail;
         }
 
-        const response = await fetch(`/api/events/search?lat=${center.lat}&lon=${center.lng}&radius=${searchRadius}`, {
+        const filters = this.searchFilters || { startDate: null, endDate: null, venueRadiusKm: 1 };
+        const query = this.buildEventSearchQuery(center.lat, center.lng, searchRadius, filters);
+        const response = await fetch(`/api/events/search?${query}`, {
           headers
         });
 
@@ -798,7 +933,7 @@ class EventConflictFinder {
         this.displayEvents();
         
         // Detect conflicts
-        await this.detectConflicts(timeBuffer);
+        await this.detectConflicts(timeBuffer, filters);
         if (!this.hasUnlimitedAccess) {
           this.incrementFreeSearchCount();
         }
@@ -1094,6 +1229,7 @@ class EventConflictFinder {
       const conflictBadge = hasConflicts 
         ? `<span class="conflict-badge" title="${this.eventConflictsMap[event.id].length} conflict(s)">⚠️ ${this.eventConflictsMap[event.id].length}</span>`
         : '';
+      const eventGenresMarkup = this.renderGenrePills(event.genres);
       
       eventItem.innerHTML = `
         <h4>
@@ -1102,6 +1238,7 @@ class EventConflictFinder {
         </h4>
         <p><strong>Venue:</strong> ${event.venue.name || 'N/A'}</p>
         <p><strong>Time:</strong> ${startDate.toLocaleString()} - ${endDate.toLocaleTimeString()}</p>
+        ${eventGenresMarkup ? `<div class="genre-pill-row">${eventGenresMarkup}</div>` : ''}
       `;
 
       if (event.source === 'ticketmaster' && event.url) {
@@ -1589,12 +1726,15 @@ class EventConflictFinder {
       const conflictExplanation = isSameVenue 
         ? 'Both events are scheduled at the same venue with overlapping times.'
         : 'Events are at nearby venues with overlapping times.';
+      const competitionBadge = conflict.directCompetition ? '<span class="genre-badge">Direct competition</span>' : '';
+      const sharedGenresMarkup = conflict.directCompetition ? this.renderGenrePills(conflict.sharedGenres) : '';
       
       conflictItem.innerHTML = `
-        <h4>${conflictTypeLabel}</h4>
+        <h4>${conflictTypeLabel} ${competitionBadge}</h4>
         <p style="font-size: 0.8rem; color: #6b7280; margin-bottom: 0.75rem; font-style: italic;">${conflictExplanation}</p>
         <p><strong>Time Slot:</strong> ${conflict.timeSlot}</p>
         <p><strong>Severity:</strong> ${severityBadge}</p>
+        ${sharedGenresMarkup ? `<div class="genre-callout"><strong>Shared genres:</strong> ${sharedGenresMarkup}</div>` : ''}
         <p style="margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px solid #e5e7eb;"><strong>Event Times:</strong></p>
         <ul style="margin-top: 0.5rem;">
           <li style="margin-bottom: 0.5rem;">
@@ -1877,18 +2017,42 @@ class EventConflictFinder {
     }
   }
 
-  async detectConflicts(timeBuffer) {
+  async detectConflicts(timeBuffer, filterOverrides = {}) {
     const perfStart = typeof performance !== 'undefined' ? performance.now() : 0;
+    const fallbackFilters = this.searchFilters || { startDate: null, endDate: null, venueRadiusKm: null };
+    const appliedFilters = {
+      startDate: filterOverrides.startDate !== undefined ? filterOverrides.startDate : fallbackFilters.startDate,
+      endDate: filterOverrides.endDate !== undefined ? filterOverrides.endDate : fallbackFilters.endDate,
+      venueRadiusKm: filterOverrides.venueRadiusKm !== undefined ? filterOverrides.venueRadiusKm : fallbackFilters.venueRadiusKm
+    };
+    const radiusForLogging = appliedFilters.venueRadiusKm ?? 1;
+
     try {
+      const payload = {
+        events: this.events,
+        timeBuffer: timeBuffer,
+        context: {
+          lat: this.locationCoords?.lat || null,
+          lon: this.locationCoords?.lng || null
+        }
+      };
+
+      if (appliedFilters.venueRadiusKm !== undefined && appliedFilters.venueRadiusKm !== null) {
+        payload.venueRadiusKm = appliedFilters.venueRadiusKm;
+      }
+      if (appliedFilters.startDate) {
+        payload.startDate = appliedFilters.startDate;
+      }
+      if (appliedFilters.endDate) {
+        payload.endDate = appliedFilters.endDate;
+      }
+
       const response = await fetch('/api/conflicts/detect', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({
-          events: this.events,
-          timeBuffer: timeBuffer
-        })
+        body: JSON.stringify(payload)
       });
 
       if (!response.ok) {
@@ -1927,7 +2091,8 @@ class EventConflictFinder {
       this.logPerformance('detectConflicts', perfStart, {
         eventsAnalyzed: this.events.length,
         conflictsFound: Array.isArray(this.conflicts) ? this.conflicts.length : 0,
-        timeBuffer
+        timeBuffer,
+        venueRadiusKm: radiusForLogging
       });
     }
   }
@@ -2113,12 +2278,28 @@ class EventConflictFinder {
       return;
     }
 
-    suggestionsContainer.innerHTML = '';
+    // Get the ul element inside the dropdown
+    let suggestionsList = suggestionsContainer.querySelector('ul');
+    if (!suggestionsList) {
+      console.warn('Suggestions list (ul) not found in dropdown container, creating it...');
+      // Create ul if it doesn't exist
+      const newUl = document.createElement('ul');
+      newUl.className = 'p-2 text-sm text-body font-medium';
+      newUl.setAttribute('aria-labelledby', 'location');
+      newUl.setAttribute('role', 'listbox');
+      suggestionsContainer.appendChild(newUl);
+      suggestionsList = newUl;
+    }
+    
+    suggestionsList.innerHTML = '';
     
     this.locationSuggestions.forEach((suggestion, index) => {
-      const item = document.createElement('div');
+      const listItem = document.createElement('li');
+      const item = document.createElement('a');
       item.className = 'location-suggestion-item';
+      item.href = '#';
       item.dataset.index = index;
+      item.setAttribute('role', 'option');
       
       // Format the display name
       const displayName = suggestion.display_name || suggestion.name || 'Unknown Location';
@@ -2157,7 +2338,8 @@ class EventConflictFinder {
       `;
       
       // Handle click
-      item.addEventListener('click', () => {
+      item.addEventListener('click', (e) => {
+        e.preventDefault();
         this.selectSuggestion(suggestion);
       });
       
@@ -2167,7 +2349,8 @@ class EventConflictFinder {
         this.updateHighlight();
       });
       
-      suggestionsContainer.appendChild(item);
+      listItem.appendChild(item);
+      suggestionsList.appendChild(listItem);
     });
     
     this.showSuggestions();
@@ -2175,15 +2358,48 @@ class EventConflictFinder {
 
   showSuggestions() {
     const suggestionsContainer = document.getElementById('location-suggestions');
-    suggestionsContainer.classList.add('show');
+    if (!suggestionsContainer) {
+      console.warn('Location suggestions container not found');
+      return;
+    }
+    
+    // Remove hidden class first
+    suggestionsContainer.classList.remove('hidden');
+    
+    // Ensure it's visible with !important to override CSS
+    suggestionsContainer.style.setProperty('display', 'block', 'important');
+    
+    // Use double requestAnimationFrame to ensure positioning happens after display is set
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        this.positionSuggestionDropdown();
+      });
+    });
   }
 
   hideSuggestions() {
     const suggestionsContainer = document.getElementById('location-suggestions');
     if (suggestionsContainer) {
-      suggestionsContainer.classList.remove('show');
+      suggestionsContainer.classList.add('hidden');
+      suggestionsContainer.style.display = 'none';
       // Clear the HTML content to prevent stale suggestions
-      suggestionsContainer.innerHTML = '';
+      const suggestionsList = suggestionsContainer.querySelector('ul');
+      if (suggestionsList) {
+        suggestionsList.innerHTML = '';
+      }
+      // Reset all positioning styles (remove inline styles)
+      suggestionsContainer.style.removeProperty('inset');
+      suggestionsContainer.style.removeProperty('position');
+      suggestionsContainer.style.removeProperty('left');
+      suggestionsContainer.style.removeProperty('top');
+      suggestionsContainer.style.removeProperty('width');
+      suggestionsContainer.style.removeProperty('right');
+      suggestionsContainer.style.removeProperty('bottom');
+      suggestionsContainer.style.removeProperty('margin-top');
+      suggestionsContainer.style.removeProperty('margin-bottom');
+      suggestionsContainer.style.removeProperty('transform');
+      suggestionsContainer.style.removeProperty('z-index');
+      suggestionsContainer.classList.remove('mobile');
     }
     this.selectedSuggestionIndex = -1;
     // Also clear stored suggestions
@@ -2238,6 +2454,148 @@ class EventConflictFinder {
     
     // Focus back on input
     locationInput.focus();
+  }
+
+  getConsoleContainerRect() {
+    try {
+      const consoleCard = document.querySelector('.console-card');
+      if (!consoleCard) {
+        return null;
+      }
+      const rect = consoleCard.getBoundingClientRect();
+      const style = window.getComputedStyle(consoleCard);
+      const paddingLeft = parseFloat(style.paddingLeft) || 0;
+      const paddingRight = parseFloat(style.paddingRight) || 0;
+      const usableWidth = Math.max(0, rect.width - paddingLeft - paddingRight);
+      return {
+        left: rect.left + paddingLeft,
+        width: usableWidth
+      };
+    } catch (error) {
+      console.error('Error measuring console card:', error);
+      return null;
+    }
+  }
+
+  positionSuggestionDropdown() {
+    const suggestionsContainer = document.getElementById('location-suggestions');
+    const locationInput = document.getElementById('location');
+    if (!suggestionsContainer || !locationInput) {
+      return;
+    }
+    
+    // Don't position if dropdown is hidden
+    if (suggestionsContainer.classList.contains('hidden')) {
+      return;
+    }
+    
+    // Get the input field container (parent of location-suggestions)
+    const inputFieldContainer = locationInput.closest('.input-field--location');
+    const inputShell = locationInput.closest('.input-shell');
+    
+    if (!inputFieldContainer || !inputShell) {
+      return;
+    }
+    
+    const isMobile = window.matchMedia('(max-width: 768px)').matches;
+    
+    if (isMobile) {
+      const containerRect = inputFieldContainer.getBoundingClientRect();
+      const inputRect = locationInput.getBoundingClientRect();
+      const inputShellRect = inputShell.getBoundingClientRect();
+      
+      // Use the input shell width and position for perfect alignment
+      const inputShellWidth = inputShellRect.width;
+      const inputShellLeft = inputShellRect.left;
+      
+      const viewportWidth = window.innerWidth;
+      const horizontalMargin = 16;
+      
+      // Ensure dropdown doesn't go off-screen on the sides
+      let computedLeft = inputShellLeft;
+      let desiredWidth = inputShellWidth;
+      
+      // Adjust if dropdown would go off the right edge
+      if (computedLeft + desiredWidth > viewportWidth - horizontalMargin) {
+        desiredWidth = viewportWidth - computedLeft - horizontalMargin;
+      }
+      
+      // Adjust if dropdown would go off the left edge
+      if (computedLeft < horizontalMargin) {
+        computedLeft = horizontalMargin;
+        desiredWidth = Math.min(inputShellWidth, viewportWidth - horizontalMargin * 2);
+      }
+      
+      // Ensure minimum width
+      const minWidth = Math.min(280, viewportWidth - horizontalMargin * 2);
+      desiredWidth = Math.max(desiredWidth, minWidth);
+
+      // Calculate position directly from the bottom of the input shell (the actual input field)
+      // This ensures the dropdown appears directly below the input field
+      const inputBottom = inputShellRect.bottom;
+      const spacing = 6;
+      const topPosition = inputBottom + spacing;
+      
+      // Always position below the input - never above
+      // If there's not enough space, just limit the height
+      const viewportHeight = window.innerHeight;
+      const dropdownMaxHeight = 280; // max-height from CSS
+      const spaceBelow = viewportHeight - topPosition;
+      
+      // Always use topPosition (below input) - never position above
+      let finalTop = topPosition;
+      
+      // If space is limited, we'll just scroll within the dropdown
+      // but always keep it below the input field
+
+      // Use !important via setProperty to override CSS
+      // CRITICAL: Remove inset property first (it's a shorthand that overrides top/left/right/bottom)
+      // The inset property was causing the dropdown to position incorrectly
+      suggestionsContainer.style.removeProperty('inset');
+      suggestionsContainer.style.setProperty('inset', 'unset', 'important');
+      
+      // Now set individual positioning properties - these will work once inset is removed
+      suggestionsContainer.style.setProperty('position', 'fixed', 'important');
+      suggestionsContainer.style.setProperty('left', `${computedLeft}px`, 'important');
+      suggestionsContainer.style.setProperty('top', `${finalTop}px`, 'important');
+      suggestionsContainer.style.setProperty('width', `${desiredWidth}px`, 'important');
+      suggestionsContainer.style.setProperty('right', 'auto', 'important');
+      suggestionsContainer.style.setProperty('bottom', 'auto', 'important');
+      suggestionsContainer.style.setProperty('transform', 'none', 'important');
+      suggestionsContainer.style.setProperty('margin-top', '0', 'important');
+      suggestionsContainer.style.setProperty('margin-bottom', 'auto', 'important');
+      suggestionsContainer.style.setProperty('z-index', '20001', 'important');
+      suggestionsContainer.classList.add('mobile');
+      
+      // Force a reflow to ensure styles are applied
+      void suggestionsContainer.offsetHeight;
+    } else {
+      // Desktop: Use absolute positioning relative to input field container
+      // Clear any mobile-specific inline styles first
+      suggestionsContainer.style.removeProperty('position');
+      suggestionsContainer.style.removeProperty('left');
+      suggestionsContainer.style.removeProperty('top');
+      suggestionsContainer.style.removeProperty('width');
+      suggestionsContainer.style.removeProperty('right');
+      suggestionsContainer.style.removeProperty('bottom');
+      suggestionsContainer.style.removeProperty('margin-top');
+      suggestionsContainer.style.removeProperty('margin-bottom');
+      suggestionsContainer.style.removeProperty('transform');
+      suggestionsContainer.style.removeProperty('z-index');
+      
+      // Position dropdown directly below the input shell
+      suggestionsContainer.style.position = 'absolute';
+      suggestionsContainer.style.top = '100%';
+      suggestionsContainer.style.left = '0';
+      suggestionsContainer.style.right = '0';
+      suggestionsContainer.style.width = '100%';
+      suggestionsContainer.style.marginTop = '6px';
+      suggestionsContainer.style.marginBottom = 'auto';
+      suggestionsContainer.style.bottom = 'auto';
+      suggestionsContainer.style.transform = 'none';
+      suggestionsContainer.style.zIndex = '20000';
+      suggestionsContainer.classList.remove('mobile');
+    }
   }
 
   async requestLocationSuggestions(query, signal) {
@@ -2411,9 +2769,18 @@ class EventConflictFinder {
       // Get search parameters
       const radius = parseInt(document.getElementById('radius').value) || 25;
       const timeBuffer = parseInt(document.getElementById('timeBuffer').value) || 30;
+      const filters = this.getFiltersFromInputs();
+
+      if (!this.validateDateRangeFilters(filters)) {
+        this.hideLoading();
+        return;
+      }
+
+      this.searchFilters = filters;
       
       // Fetch events from API
-      const response = await fetch(`/api/events/search?lat=${lat}&lon=${lng}&radius=${radius}`);
+      const query = this.buildEventSearchQuery(lat, lng, radius, filters);
+      const response = await fetch(`/api/events/search?${query}`);
       
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
@@ -2432,7 +2799,7 @@ class EventConflictFinder {
       this.displayEvents();
 
       // Detect conflicts
-      await this.detectConflicts(timeBuffer);
+      await this.detectConflicts(timeBuffer, filters);
       
     } catch (error) {
       console.error('Map click search error:', error);
@@ -2542,6 +2909,26 @@ class EventConflictFinder {
     return div.innerHTML;
   }
 
+  formatGenreLabel(tag) {
+    if (!tag || typeof tag !== 'string') {
+      return '';
+    }
+    return tag
+      .split(' ')
+      .filter(Boolean)
+      .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+      .join(' ');
+  }
+
+  renderGenrePills(genres = []) {
+    if (!Array.isArray(genres) || genres.length === 0) {
+      return '';
+    }
+    return genres
+      .map(genre => `<span class="genre-pill">${this.escapeHtml(this.formatGenreLabel(genre))}</span>`)
+      .join('');
+  }
+
   updateMarkerColors() {
     // Update existing marker colors based on conflicts without recreating them
     this.markers.forEach(marker => {
@@ -2616,12 +3003,22 @@ class EventConflictFinder {
   }
 
   loadPaywallState() {
-    let storedLimit = 3;
+    let storedLimit = 5;
     try {
-      const rawLimit = parseInt(localStorage.getItem('ecf_free_search_limit') || '3', 10);
-      storedLimit = isNaN(rawLimit) ? 3 : rawLimit;
+      const rawLimit = parseInt(localStorage.getItem('ecf_free_search_limit') || '5', 10);
+      storedLimit = isNaN(rawLimit) ? 5 : rawLimit;
     } catch (error) {
-      storedLimit = 3;
+      storedLimit = 5;
+    }
+    // Force minimum limit to 5 and update localStorage if it was less
+    if (!Number.isFinite(storedLimit) || storedLimit < 5) {
+      storedLimit = 5;
+      // Immediately update localStorage with the corrected value
+      try {
+        localStorage.setItem('ecf_free_search_limit', '5');
+      } catch (error) {
+        console.warn('Unable to update free search limit in localStorage:', error);
+      }
     }
 
     const defaults = {
@@ -2652,7 +3049,14 @@ class EventConflictFinder {
       ...this.paywallState,
       ...updates
     };
+    if (updates.freeSearchLimit !== undefined) {
+      this.paywallState.freeSearchLimit = updates.freeSearchLimit;
+    }
+    if (typeof this.paywallState.freeSearchLimit !== 'number' || Number.isNaN(this.paywallState.freeSearchLimit)) {
+      this.paywallState.freeSearchLimit = this.freeSearchLimit || 5;
+    }
 
+    this.freeSearchLimit = this.paywallState.freeSearchLimit || this.freeSearchLimit || 5;
     this.freeSearchCount = this.paywallState.freeSearchCount;
     this.userEmail = this.paywallState.email;
     this.hasUnlimitedAccess = this.paywallState.unlimitedAccess;
@@ -2718,10 +3122,12 @@ class EventConflictFinder {
       return;
     }
 
+    const effectiveLimit = this.freeSearchLimit || 5;
+    this.freeSearchLimit = effectiveLimit;
     const newCount = this.freeSearchCount + 1;
     this.persistPaywallState({ freeSearchCount: newCount });
 
-    if (newCount >= this.freeSearchLimit) {
+    if (newCount >= effectiveLimit) {
       this.showPaywallModal('limit');
     }
   }
@@ -2927,11 +3333,15 @@ class EventConflictFinder {
   }
 
   handleServerPaywallLimit(payload = {}) {
+    const updates = {};
     if (payload.freeSearchLimit) {
-      this.freeSearchLimit = payload.freeSearchLimit;
+      updates.freeSearchLimit = payload.freeSearchLimit;
     }
     if (typeof payload.searchCount === 'number') {
-      this.persistPaywallState({ freeSearchCount: payload.searchCount });
+      updates.freeSearchCount = payload.searchCount;
+    }
+    if (Object.keys(updates).length > 0) {
+      this.persistPaywallState(updates);
     }
     this.showPaywallModal('server');
     this.setPaywallMessage('Free searches exhausted. Purchase the unlimited plan to continue.', 'warning');
@@ -2939,6 +3349,13 @@ class EventConflictFinder {
 
   syncPlanHeaders(headers) {
     if (!headers?.get) return;
+    const limitHeader = headers.get('X-Free-Search-Limit');
+    if (limitHeader) {
+      const parsedLimit = parseInt(limitHeader, 10);
+      if (!Number.isNaN(parsedLimit) && parsedLimit > 0) {
+        this.persistPaywallState({ freeSearchLimit: parsedLimit });
+      }
+    }
     const plan = headers.get('X-Paywall-Plan');
     if (plan === 'active') {
       // If server confirms active status, ensure localStorage is updated
@@ -3263,6 +3680,10 @@ document.addEventListener('DOMContentLoaded', () => {
       resizeTimeout = setTimeout(() => {
         if (appInstance && appInstance.map) {
           appInstance.map.invalidateSize();
+        }
+        const suggestions = document.getElementById('location-suggestions');
+        if (suggestions && !suggestions.classList.contains('hidden') && appInstance) {
+          appInstance.positionSuggestionDropdown();
         }
       }, 250);
     });

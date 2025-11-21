@@ -3,6 +3,7 @@ const rateLimiter = require('../utils/rateLimiter');
 const cacheManager = require('../utils/cacheManager');
 const requestQueue = require('../utils/requestQueue');
 const monitoring = require('../utils/monitoring');
+const { filterEventsByDateRange } = require('../utils/searchFilters');
 
 class BandsintownService {
   constructor() {
@@ -46,14 +47,15 @@ class BandsintownService {
         address: venue.location || venue.city || ''
       },
       source: 'bandsintown',
-      url: eventData.url || eventData.facebook_rsvp_url || `https://www.bandsintown.com/e/${eventData.id}`
+      url: eventData.url || eventData.facebook_rsvp_url || `https://www.bandsintown.com/e/${eventData.id}`,
+      genres: this.extractGenres(eventData)
     };
   }
 
   // Search events by location using Bandsintown API
   // Note: Bandsintown API is primarily artist-based, but we can search popular artists
   // or use their location-based endpoints if available
-  async getEventsByLocation(lat, lon, radius = 10, userId = 'default') {
+  async getEventsByLocation(lat, lon, radius = 10, userId = 'default', options = {}) {
     const requestStart = process.hrtime.bigint();
     const recordMetric = (data = {}) => {
       monitoring.recordPerformanceMetric('bandsintown_service', {
@@ -72,14 +74,18 @@ class BandsintownService {
         return [];
       }
 
+      const useCache = !options.startDate && !options.endDate;
+
       // Check cache first
-      const cached = await cacheManager.get(this.apiName, lat, lon, radius);
-      if (cached) {
-        recordMetric({
-          fromCache: true,
-          cachedCount: cached.length
-        });
-        return cached;
+      if (useCache) {
+        const cached = await cacheManager.get(this.apiName, lat, lon, radius);
+        if (cached) {
+          recordMetric({
+            fromCache: true,
+            cachedCount: cached.length
+          });
+          return cached;
+        }
       }
 
       // Check rate limits
@@ -93,7 +99,7 @@ class BandsintownService {
         }
         
         if (limitCheck.shouldQueue) {
-          return await requestQueue.enqueue(this.apiName, () => this.getEventsByLocation(lat, lon, radius, userId));
+          return await requestQueue.enqueue(this.apiName, () => this.getEventsByLocation(lat, lon, radius, userId, options));
         }
         
         console.warn(`Bandsintown: Rate limit exceeded. Wait time: ${limitCheck.waitTime}s`);
@@ -101,15 +107,16 @@ class BandsintownService {
       }
 
       if (limitCheck.shouldQueue) {
-        return await requestQueue.enqueue(this.apiName, () => this.searchEventsByLocation(lat, lon, radius));
+        return await requestQueue.enqueue(this.apiName, () => this.searchEventsByLocation(lat, lon, radius, options));
       }
 
       // Bandsintown API doesn't have direct location-based search
       // We'll use a workaround: search for popular artists in the area
-      const events = await this.searchEventsByLocation(lat, lon, radius);
+      const events = await this.searchEventsByLocation(lat, lon, radius, options);
       
-      // Cache the results
-      await cacheManager.set(this.apiName, lat, lon, radius, events);
+      if (useCache) {
+        await cacheManager.set(this.apiName, lat, lon, radius, events);
+      }
       
       recordMetric({
         fromCache: false,
@@ -118,7 +125,7 @@ class BandsintownService {
       return events;
     } catch (error) {
       console.error('Bandsintown service error:', error.message);
-      const cached = await cacheManager.get(this.apiName, lat, lon, radius);
+      const cached = useCache ? await cacheManager.get(this.apiName, lat, lon, radius) : null;
       if (cached) {
         recordMetric({
           fromCache: true,
@@ -136,7 +143,7 @@ class BandsintownService {
     }
   }
 
-  async searchEventsByLocation(lat, lon, radius) {
+  async searchEventsByLocation(lat, lon, radius, options = {}) {
     const searchStart = process.hrtime.bigint();
     try {
       // Bandsintown API structure:
@@ -196,8 +203,7 @@ class BandsintownService {
         index === self.findIndex(e => e.id === event.id)
       );
 
-      // Cache the results (use lat/lon from method parameters)
-      await cacheManager.set(this.apiName, lat, lon, radius, uniqueEvents);
+      const dateFilteredEvents = filterEventsByDateRange(uniqueEvents, options.startDate, options.endDate);
 
       monitoring.recordPerformanceMetric('bandsintown_fanout', {
         durationMs: Number(process.hrtime.bigint() - searchStart) / 1e6,
@@ -210,7 +216,7 @@ class BandsintownService {
         lon
       });
 
-      return uniqueEvents;
+      return dateFilteredEvents;
     } catch (error) {
       console.error('Bandsintown location search error:', error.message);
       // Try to return cached data on error
@@ -222,7 +228,7 @@ class BandsintownService {
         lat,
         lon
       });
-      return cached || [];
+      return filterEventsByDateRange(cached || [], options.startDate, options.endDate);
     }
   }
 
@@ -316,6 +322,54 @@ class BandsintownService {
       
       return [];
     }
+  }
+
+  extractGenres(eventData) {
+    const tags = new Set();
+    const genreCandidates = [];
+
+    if (Array.isArray(eventData?.genres)) {
+      genreCandidates.push(...eventData.genres);
+    }
+    if (eventData?.genre) {
+      genreCandidates.push(eventData.genre);
+    }
+    if (eventData?.type) {
+      genreCandidates.push(eventData.type);
+    }
+    if (eventData?.artist?.genre) {
+      genreCandidates.push(eventData.artist.genre);
+    }
+    if (Array.isArray(eventData?.lineup) && eventData.lineup.length > 0) {
+      genreCandidates.push('music');
+      if (eventData.lineup.length >= 4) {
+        genreCandidates.push('festival');
+      }
+    }
+
+    genreCandidates.forEach(candidate => {
+      const normalized = this.normalizeGenreName(candidate);
+      if (normalized) {
+        tags.add(normalized);
+      }
+    });
+
+    if (tags.size === 0) {
+      tags.add('music');
+    }
+
+    return Array.from(tags);
+  }
+
+  normalizeGenreName(value) {
+    if (!value || typeof value !== 'string') {
+      return null;
+    }
+    const normalized = value.toLowerCase().trim();
+    if (!normalized) {
+      return null;
+    }
+    return normalized.replace(/\s+/g, ' ');
   }
 
   // Calculate distance between two coordinates (Haversine formula)

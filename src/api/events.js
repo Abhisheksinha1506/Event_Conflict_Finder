@@ -7,6 +7,11 @@ const cacheManager = require('../utils/cacheManager');
 const monitoring = require('../utils/monitoring');
 const paywallService = require('../utils/paywallService');
 const freeSearchLimiter = require('../utils/freeSearchLimiter');
+const {
+  filterEventsByDateRange,
+  parseDateRangeFilters,
+  sanitizeVenueRadiusKm
+} = require('../utils/searchFilters');
 
 // Track pending requests for deduplication (same location queries)
 const pendingRequests = new Map();
@@ -25,6 +30,8 @@ router.get('/search', async (req, res) => {
       cacheHitRate: payload.cache?.hitRate,
       deduplicatedRequest: overrides.deduplicatedRequest || false,
       radius: payload.searchParams?.radius,
+      startDate: payload.searchParams?.startDate,
+      endDate: payload.searchParams?.endDate,
       lat: payload.searchParams?.lat,
       lon: payload.searchParams?.lon,
       ticketmasterDurationMs: overrides.ticketmasterDurationMs,
@@ -51,7 +58,7 @@ router.get('/search', async (req, res) => {
   };
 
   try {
-    const { lat, lon, radius = 10 } = req.query;
+    const { lat, lon, radius = 10, startDate: startDateRaw, endDate: endDateRaw, venueRadiusKm: venueRadiusRaw } = req.query;
 
     if (!lat || !lon) {
       return res.status(400).json({ 
@@ -63,6 +70,9 @@ router.get('/search', async (req, res) => {
     const latitude = parseFloat(lat);
     const longitude = parseFloat(lon);
     const searchRadius = parseFloat(radius);
+    const { startDate, endDate } = parseDateRangeFilters(startDateRaw, endDateRaw);
+    const hasVenueRadiusOverride = venueRadiusRaw !== undefined && venueRadiusRaw !== null && venueRadiusRaw !== '';
+    const venueRadiusKm = hasVenueRadiusOverride ? sanitizeVenueRadiusKm(venueRadiusRaw, 1) : null;
 
     // Validate coordinates
     if (isNaN(latitude) || isNaN(longitude)) {
@@ -90,6 +100,8 @@ router.get('/search', async (req, res) => {
       try {
         paywallOutcome = await paywallService.recordSearchUsage(userEmail);
         if (!paywallOutcome.allowed) {
+          console.warn(`Paywall limit reached for Supabase user ${userEmail} after ${paywallOutcome.searchCount} searches`);
+          res.set('X-Free-Search-Limit', String(paywallOutcome.freeSearchLimit || paywallService.FREE_SEARCH_LIMIT));
           return res.status(402).json({
             error: 'PAYWALL_LIMIT_REACHED',
             message: 'Free searches exhausted. Purchase the unlimited plan to continue.',
@@ -108,6 +120,8 @@ router.get('/search', async (req, res) => {
     } else {
       paywallOutcome = freeSearchLimiter.recordSearch(fallbackLimiterKey);
       if (!paywallOutcome.allowed) {
+        console.warn(`Paywall fallback limiter triggered for ${fallbackLimiterKey} after ${paywallOutcome.searchCount} searches`);
+        res.set('X-Free-Search-Limit', String(paywallOutcome.freeSearchLimit || paywallService.FREE_SEARCH_LIMIT));
         return res.status(402).json({
           error: 'PAYWALL_LIMIT_REACHED',
           message: 'Free searches exhausted. Purchase the unlimited plan to continue.',
@@ -119,7 +133,8 @@ router.get('/search', async (req, res) => {
     }
 
     // Check for request deduplication - if same query is already in progress, wait for it
-    const requestKey = `search:${latitude.toFixed(4)}:${longitude.toFixed(4)}:${searchRadius}`;
+    const dateKey = `${startDate ? startDate.toISOString() : 'any'}:${endDate ? endDate.toISOString() : 'any'}`;
+    const requestKey = `search:${latitude.toFixed(4)}:${longitude.toFixed(4)}:${searchRadius}:${dateKey}`;
     
     if (pendingRequests.has(requestKey)) {
       // Another request for same location is in progress, wait for it
@@ -142,12 +157,13 @@ router.get('/search', async (req, res) => {
     const requestPromise = (async () => {
       try {
         // Parallel API calls with error handling
+        const serviceOptions = { startDate, endDate };
         const [ticketmasterResult, bandsintownResult] = await Promise.all([
           measureServiceCall('ticketmaster', () => 
-            TicketmasterService.getEventsByLocation(latitude, longitude, searchRadius, userId)
+            TicketmasterService.getEventsByLocation(latitude, longitude, searchRadius, userId, serviceOptions)
           ),
           measureServiceCall('bandsintown', () => 
-            BandsintownService.getEventsByLocation(latitude, longitude, searchRadius, userId)
+            BandsintownService.getEventsByLocation(latitude, longitude, searchRadius, userId, serviceOptions)
           )
         ]);
 
@@ -162,6 +178,7 @@ router.get('/search', async (req, res) => {
           ...ticketmasterEvents,
           ...bandsintownEvents
         ];
+        const filteredEvents = filterEventsByDateRange(allEvents, startDate, endDate);
 
         // Get enabled status from services
         const ticketmasterEnabled = TicketmasterService.enabled;
@@ -171,8 +188,8 @@ router.get('/search', async (req, res) => {
         const cacheStats = cacheManager.getStats();
 
         const response = {
-          events: allEvents,
-          total: allEvents.length,
+          events: filteredEvents,
+          total: filteredEvents.length,
           sources: {
             ticketmaster: {
               enabled: ticketmasterEnabled,
@@ -190,11 +207,18 @@ router.get('/search', async (req, res) => {
           searchParams: {
             lat: latitude,
             lon: longitude,
-            radius: searchRadius
+            radius: searchRadius,
+            startDate: startDate ? startDate.toISOString() : null,
+            endDate: endDate ? endDate.toISOString() : null
           },
           cache: {
             hitRate: cacheStats.hitRate,
             connected: cacheStats.connected
+          },
+          filters: {
+            startDate: startDate ? startDate.toISOString() : null,
+            endDate: endDate ? endDate.toISOString() : null,
+            venueRadiusKm: hasVenueRadiusOverride ? venueRadiusKm : null
           }
         };
 
@@ -218,6 +242,8 @@ router.get('/search', async (req, res) => {
     // Add cache headers
     res.set('Cache-Control', 'public, max-age=900'); // 15 minutes
     res.set('X-Cache-Hit-Rate', result.cache.hitRate);
+    const effectiveFreeSearchLimit = paywallOutcome?.freeSearchLimit || paywallService.FREE_SEARCH_LIMIT;
+    res.set('X-Free-Search-Limit', String(effectiveFreeSearchLimit));
     if (paywallOutcome) {
       res.set('X-Paywall-Plan', paywallOutcome.planStatus || 'free');
     }

@@ -1,3 +1,15 @@
+const DEFAULT_VENUE_THRESHOLD_KM = 1;
+const METRO_VENUE_THRESHOLD_KM = 3;
+const MAX_VENUE_THRESHOLD_KM = 5;
+const METRO_REGIONS = [
+  { name: 'new_york', lat: 40.7128, lon: -74.0060, radiusKm: 50 },
+  { name: 'los_angeles', lat: 34.0522, lon: -118.2437, radiusKm: 45 },
+  { name: 'chicago', lat: 41.8781, lon: -87.6298, radiusKm: 35 },
+  { name: 'london', lat: 51.5072, lon: -0.1276, radiusKm: 40 },
+  { name: 'toronto', lat: 43.6532, lon: -79.3832, radiusKm: 30 },
+  { name: 'sydney', lat: -33.8688, lon: 151.2093, radiusKm: 30 }
+];
+
 class ConflictDetector {
   /**
    * Calculate dynamic proximity threshold based on venue density and context
@@ -77,14 +89,12 @@ class ConflictDetector {
     return this.calculateNameSimilarity(norm1, norm2);
   }
 
-  static findConflicts(events, timeBuffer = 30, venueProximityThreshold = null, skipDuplicateFilter = false) {
+  static findConflicts(events, timeBuffer = 30, venueProximityThreshold = null, skipDuplicateFilter = false, options = {}) {
     // First, filter out duplicate events (unless already filtered)
     const uniqueEvents = skipDuplicateFilter ? events : this.filterDuplicates(events);
     
-    // Calculate dynamic threshold if not provided
-    const dynamicThreshold = venueProximityThreshold !== null 
-      ? venueProximityThreshold 
-      : this.calculateDynamicThreshold(uniqueEvents);
+    // Calculate context-aware threshold
+    const thresholdToUse = this.resolveVenueThreshold(uniqueEvents, venueProximityThreshold, options);
     
     const conflicts = [];
     const processedPairs = new Set();
@@ -126,22 +136,21 @@ class ConflictDetector {
         // Calculate venue distance
         const venueDistance = this.calculateVenueDistance(event1.venue, event2.venue);
         
-        // Check for venue proximity with dynamic threshold
-        const venueProximity = venueDistance < dynamicThreshold;
-
         // Additional check: If venues are close but have very different names,
         // require closer proximity to reduce false positives
         const venueNameSimilarity = this.calculateVenueNameSimilarity(event1.venue, event2.venue);
         
         // If venue names are very different (< 30% similar), require closer proximity
         // This prevents false positives like "Actor's Temple Theater" vs "Richard Rodgers Theatre"
-        let effectiveThreshold = dynamicThreshold;
+        let effectiveThreshold = thresholdToUse;
         if (venueNameSimilarity < 0.3 && venueDistance > 0.1) {
           // For very different venue names, require much closer proximity (0.1km = 100m)
           effectiveThreshold = 0.1;
         }
 
         const meetsProximityRequirement = venueDistance < effectiveThreshold;
+
+        const sharedGenres = this.getSharedGenres(event1, event2);
 
         if (timeOverlap && meetsProximityRequirement) {
           const conflictType = this.determineConflictType(event1, event2);
@@ -150,7 +159,9 @@ class ConflictDetector {
             events: [event1, event2],
             conflictType: conflictType,
             timeSlot: this.getTimeSlotString(event1, event2),
-            severity: this.calculateSeverity(event1, event2, bufferMs)
+            severity: this.calculateSeverity(event1, event2, bufferMs),
+            sharedGenres,
+            directCompetition: sharedGenres.length > 0
           });
 
           processedPairs.add(pairKey);
@@ -159,6 +170,75 @@ class ConflictDetector {
     }
 
     return conflicts;
+  }
+
+  static resolveVenueThreshold(events = [], manualThreshold, options = {}) {
+    const normalizedManual = this.normalizeThresholdValue(manualThreshold);
+    const baseThreshold = this.normalizeThresholdValue(options.baseThresholdKm) || DEFAULT_VENUE_THRESHOLD_KM;
+    const dynamicBase = this.normalizeThresholdValue(options.dynamicBaseKm) || 0.3;
+    const dynamicThreshold = this.calculateDynamicThreshold(events, dynamicBase);
+    const contextualThreshold = this.determineContextualThreshold(
+      options.context,
+      normalizedManual,
+      options,
+      baseThreshold
+    );
+    const baseline = contextualThreshold !== null ? contextualThreshold : baseThreshold;
+    const combined = Math.max(dynamicThreshold, baseline);
+    const maxThreshold = this.normalizeThresholdValue(options.maxThresholdKm) || MAX_VENUE_THRESHOLD_KM;
+    return Math.min(combined, maxThreshold);
+  }
+
+  static determineContextualThreshold(context = {}, manualThreshold, options = {}, baseThreshold) {
+    if (manualThreshold !== null && manualThreshold !== undefined) {
+      return manualThreshold;
+    }
+
+    if (context && context.venueRadiusKm !== undefined && context.venueRadiusKm !== null) {
+      const normalizedContext = this.normalizeThresholdValue(context.venueRadiusKm);
+      if (normalizedContext !== null) {
+        return normalizedContext;
+      }
+    }
+
+    const lat = context && context.lat !== undefined ? parseFloat(context.lat) : null;
+    const lon = context && context.lon !== undefined ? parseFloat(context.lon) : null;
+
+    if (Number.isFinite(lat) && Number.isFinite(lon)) {
+      const regions = Array.isArray(options.metroRegions) && options.metroRegions.length > 0
+        ? options.metroRegions
+        : METRO_REGIONS;
+      if (this.isMetroLocation(lat, lon, regions)) {
+        return this.normalizeThresholdValue(options.metroThresholdKm) || METRO_VENUE_THRESHOLD_KM;
+      }
+    }
+
+    return null;
+  }
+
+  static normalizeThresholdValue(value) {
+    if (value === undefined || value === null || value === '') {
+      return null;
+    }
+    const parsed = typeof value === 'number' ? value : parseFloat(value);
+    if (!Number.isFinite(parsed)) {
+      return null;
+    }
+    return Math.max(0.1, Math.min(MAX_VENUE_THRESHOLD_KM, parsed));
+  }
+
+  static isMetroLocation(lat, lon, regions = METRO_REGIONS) {
+    return regions.some(region => {
+      if (!region || typeof region.lat !== 'number' || typeof region.lon !== 'number') {
+        return false;
+      }
+      const distance = this.calculateVenueDistance(
+        { lat, lon },
+        { lat: region.lat, lon: region.lon }
+      );
+      const boundary = region.radiusKm || 40;
+      return distance <= boundary;
+    });
   }
 
   /**
@@ -477,6 +557,30 @@ class ConflictDetector {
     } else {
       return 'low';
     }
+  }
+
+  static getSharedGenres(event1, event2) {
+    const genresA = Array.isArray(event1?.genres) ? event1.genres : [];
+    const genresB = Array.isArray(event2?.genres) ? event2.genres : [];
+
+    if (!genresA.length || !genresB.length) {
+      return [];
+    }
+
+    const normalizedB = new Set(genresB.map(genre => genre.toLowerCase()));
+    const shared = new Set();
+
+    genresA.forEach(genre => {
+      if (!genre) {
+        return;
+      }
+      const normalized = genre.toLowerCase();
+      if (normalizedB.has(normalized)) {
+        shared.add(normalized);
+      }
+    });
+
+    return Array.from(shared);
   }
 }
 

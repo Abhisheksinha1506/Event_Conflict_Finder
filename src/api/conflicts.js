@@ -5,6 +5,14 @@ const TicketmasterService = require('../services/ticketmaster');
 const BandsintownService = require('../services/bandsintown');
 const rateLimiter = require('../utils/rateLimiter');
 const monitoring = require('../utils/monitoring');
+const {
+  filterEventsByDateRange,
+  parseDateRangeFilters,
+  sanitizeVenueRadiusKm
+} = require('../utils/searchFilters');
+
+const DEFAULT_VENUE_THRESHOLD_KM = 1;
+const METRO_VENUE_THRESHOLD_KM = 3;
 
 // Detect conflicts for a set of events
 router.post('/detect', async (req, res) => {
@@ -23,7 +31,15 @@ router.post('/detect', async (req, res) => {
   };
 
   try {
-    const { events, timeBuffer = 30, venueProximityThreshold = 0.3 } = req.body;
+    const {
+      events,
+      timeBuffer = 30,
+      venueProximityThreshold,
+      startDate: startDateRaw,
+      endDate: endDateRaw,
+      venueRadiusKm: venueRadiusRaw,
+      context = {}
+    } = req.body;
 
     if (!events || !Array.isArray(events)) {
       return res.status(400).json({ 
@@ -45,7 +61,6 @@ router.post('/detect', async (req, res) => {
       return res.json(emptyResponse);
     }
 
-    // Validate timeBuffer
     const buffer = parseInt(timeBuffer);
     if (isNaN(buffer) || buffer < 0) {
       return res.status(400).json({ 
@@ -54,34 +69,59 @@ router.post('/detect', async (req, res) => {
       });
     }
 
-    // Validate venueProximityThreshold (optional - defaults to dynamic calculation)
-    let proximityThreshold = undefined;
-    if (venueProximityThreshold !== undefined && venueProximityThreshold !== null) {
-      proximityThreshold = parseFloat(venueProximityThreshold);
-      if (isNaN(proximityThreshold) || proximityThreshold < 0) {
-        return res.status(400).json({ 
-          error: 'Invalid venue proximity threshold',
-          message: 'Venue proximity threshold must be a non-negative number (in kilometers)'
-        });
-      }
+    const { startDate, endDate } = parseDateRangeFilters(startDateRaw, endDateRaw);
+    const filteredEvents = filterEventsByDateRange(events, startDate, endDate);
+
+    if (filteredEvents.length === 0) {
+      const emptyPayload = {
+        conflicts: [],
+        totalEvents: events.length,
+        uniqueEvents: 0,
+        duplicatesFiltered: events.length,
+        conflictCount: 0,
+        analyzedAt: new Date().toISOString(),
+        timeBuffer: buffer,
+        venueProximityThreshold: null,
+        thresholdMode: 'dynamic',
+        filters: {
+          startDate: startDate ? startDate.toISOString() : null,
+          endDate: endDate ? endDate.toISOString() : null,
+          venueRadiusKm: null
+        }
+      };
+      recordMetrics(emptyPayload);
+      return res.json(emptyPayload);
     }
 
-    // Filter duplicates and get unique events count
-    const uniqueEvents = ConflictDetector.filterDuplicates(events);
-    const duplicatesFiltered = events.length - uniqueEvents.length;
+    const uniqueEvents = ConflictDetector.filterDuplicates(filteredEvents);
+    const duplicatesFiltered = filteredEvents.length - uniqueEvents.length;
 
-    // Use null for dynamic threshold calculation if not explicitly provided
-    const thresholdForDetection = proximityThreshold !== undefined && proximityThreshold !== null 
-      ? proximityThreshold 
-      : null;
+    let manualThreshold = undefined;
+    if (venueProximityThreshold !== undefined && venueProximityThreshold !== null) {
+      manualThreshold = sanitizeVenueRadiusKm(venueProximityThreshold, DEFAULT_VENUE_THRESHOLD_KM);
+    }
 
-    // Skip duplicate filtering in findConflicts since we already did it
-    const conflicts = ConflictDetector.findConflicts(uniqueEvents, buffer, thresholdForDetection, true);
-    
-    // Calculate the actual threshold used (for reporting)
-    const actualThreshold = thresholdForDetection !== null 
-      ? thresholdForDetection 
-      : ConflictDetector.calculateDynamicThreshold(uniqueEvents);
+    const hasVenueRadiusOverride = venueRadiusRaw !== undefined && venueRadiusRaw !== null && venueRadiusRaw !== '';
+    const venueRadiusKm = hasVenueRadiusOverride ? sanitizeVenueRadiusKm(venueRadiusRaw, DEFAULT_VENUE_THRESHOLD_KM) : null;
+
+    const contextLat = context && context.lat !== undefined ? parseFloat(context.lat) : null;
+    const contextLon = context && context.lon !== undefined ? parseFloat(context.lon) : null;
+
+    const detectionContext = {
+      lat: Number.isFinite(contextLat) ? contextLat : null,
+      lon: Number.isFinite(contextLon) ? contextLon : null,
+      venueRadiusKm
+    };
+
+    const detectionOptions = {
+      context: detectionContext,
+      baseThresholdKm: DEFAULT_VENUE_THRESHOLD_KM,
+      metroThresholdKm: METRO_VENUE_THRESHOLD_KM,
+      dynamicBaseKm: 0.3
+    };
+
+    const resolvedThreshold = ConflictDetector.resolveVenueThreshold(uniqueEvents, manualThreshold, detectionOptions);
+    const conflicts = ConflictDetector.findConflicts(uniqueEvents, buffer, manualThreshold, true, detectionOptions);
 
     const responsePayload = {
       conflicts,
@@ -91,8 +131,15 @@ router.post('/detect', async (req, res) => {
       conflictCount: conflicts.length,
       analyzedAt: new Date().toISOString(),
       timeBuffer: buffer,
-      venueProximityThreshold: actualThreshold,
-      thresholdMode: proximityThreshold !== undefined && proximityThreshold !== null ? 'manual' : 'dynamic'
+      venueProximityThreshold: resolvedThreshold,
+      thresholdMode: manualThreshold !== undefined && manualThreshold !== null
+        ? 'manual'
+        : (hasVenueRadiusOverride ? 'user_override' : 'dynamic'),
+      filters: {
+        startDate: startDate ? startDate.toISOString() : null,
+        endDate: endDate ? endDate.toISOString() : null,
+        venueRadiusKm
+      }
     };
 
     recordMetrics(responsePayload);
@@ -128,7 +175,16 @@ router.get('/location', async (req, res) => {
   };
 
   try {
-    const { lat, lon, radius = 10, timeBuffer = 30, venueProximityThreshold } = req.query;
+    const {
+      lat,
+      lon,
+      radius = 10,
+      timeBuffer = 30,
+      venueProximityThreshold,
+      startDate: startDateRaw,
+      endDate: endDateRaw,
+      venueRadiusKm: venueRadiusRaw
+    } = req.query;
 
     if (!lat || !lon) {
       return res.status(400).json({ 
@@ -142,7 +198,6 @@ router.get('/location', async (req, res) => {
     const searchRadius = parseFloat(radius);
     const buffer = parseInt(timeBuffer);
 
-    // Validate coordinates
     if (isNaN(latitude) || isNaN(longitude)) {
       return res.status(400).json({ 
         error: 'Invalid coordinates',
@@ -150,25 +205,22 @@ router.get('/location', async (req, res) => {
       });
     }
 
-    // Validate venueProximityThreshold (optional - defaults to dynamic calculation)
-    let proximityThreshold = undefined;
+    const { startDate, endDate } = parseDateRangeFilters(startDateRaw, endDateRaw);
+
+    let manualThreshold = undefined;
     if (venueProximityThreshold !== undefined && venueProximityThreshold !== null && venueProximityThreshold !== '') {
-      proximityThreshold = parseFloat(venueProximityThreshold);
-      if (isNaN(proximityThreshold) || proximityThreshold < 0) {
-        return res.status(400).json({ 
-          error: 'Invalid venue proximity threshold',
-          message: 'Venue proximity threshold must be a non-negative number (in kilometers)'
-        });
-      }
+      manualThreshold = sanitizeVenueRadiusKm(venueProximityThreshold, DEFAULT_VENUE_THRESHOLD_KM);
     }
 
-    // Get user identifier for rate limiting
-    const userId = rateLimiter.getUserIdentifier(req);
+    const hasVenueRadiusOverride = venueRadiusRaw !== undefined && venueRadiusRaw !== null && venueRadiusRaw !== '';
+    const venueRadiusKm = hasVenueRadiusOverride ? sanitizeVenueRadiusKm(venueRadiusRaw, DEFAULT_VENUE_THRESHOLD_KM) : null;
 
-    // Fetch events from all services
+    const userId = rateLimiter.getUserIdentifier(req);
+    const serviceOptions = { startDate, endDate };
+
     const [ticketmasterResult, bandsintownResult] = await Promise.allSettled([
-      TicketmasterService.getEventsByLocation(latitude, longitude, searchRadius, userId),
-      BandsintownService.getEventsByLocation(latitude, longitude, searchRadius, userId)
+      TicketmasterService.getEventsByLocation(latitude, longitude, searchRadius, userId, serviceOptions),
+      BandsintownService.getEventsByLocation(latitude, longitude, searchRadius, userId, serviceOptions)
     ]);
 
     const ticketmasterEvents = (ticketmasterResult.status === 'fulfilled' && Array.isArray(ticketmasterResult.value)) 
@@ -182,25 +234,27 @@ router.get('/location', async (req, res) => {
       ...ticketmasterEvents,
       ...bandsintownEvents
     ];
+    const filteredEvents = filterEventsByDateRange(allEvents, startDate, endDate);
 
-    // Filter duplicates
-    const uniqueEvents = ConflictDetector.filterDuplicates(allEvents);
-    const duplicatesFiltered = allEvents.length - uniqueEvents.length;
+    const uniqueEvents = ConflictDetector.filterDuplicates(filteredEvents);
+    const duplicatesFiltered = filteredEvents.length - uniqueEvents.length;
 
-    // Use null for dynamic threshold calculation if not explicitly provided
-    const thresholdForDetection = proximityThreshold !== undefined && proximityThreshold !== null 
-      ? proximityThreshold 
-      : null;
+    const detectionContext = {
+      lat: latitude,
+      lon: longitude,
+      venueRadiusKm
+    };
 
-    // Detect conflicts (skip duplicate filtering since we already did it)
-    const conflicts = ConflictDetector.findConflicts(uniqueEvents, buffer, thresholdForDetection, true);
-    
-    // Calculate the actual threshold used (for reporting)
-    const actualThreshold = thresholdForDetection !== null 
-      ? thresholdForDetection 
-      : ConflictDetector.calculateDynamicThreshold(uniqueEvents);
+    const detectionOptions = {
+      context: detectionContext,
+      baseThresholdKm: DEFAULT_VENUE_THRESHOLD_KM,
+      metroThresholdKm: METRO_VENUE_THRESHOLD_KM,
+      dynamicBaseKm: 0.3
+    };
 
-    // Calculate conflict rate based on unique events
+    const resolvedThreshold = ConflictDetector.resolveVenueThreshold(uniqueEvents, manualThreshold, detectionOptions);
+    const conflicts = ConflictDetector.findConflicts(uniqueEvents, buffer, manualThreshold, true, detectionOptions);
+
     const conflictRate = uniqueEvents.length > 0 
       ? ((conflicts.length / uniqueEvents.length) * 100).toFixed(1) 
       : '0.0';
@@ -213,7 +267,7 @@ router.get('/location', async (req, res) => {
       },
       conflicts,
       summary: {
-        totalEvents: allEvents.length,
+        totalEvents: filteredEvents.length,
         uniqueEvents: uniqueEvents.length,
         duplicatesFiltered: duplicatesFiltered,
         conflictCount: conflicts.length,
@@ -225,8 +279,15 @@ router.get('/location', async (req, res) => {
       },
       analyzedAt: new Date().toISOString(),
       timeBuffer: buffer,
-      venueProximityThreshold: actualThreshold,
-      thresholdMode: proximityThreshold !== undefined && proximityThreshold !== null ? 'manual' : 'dynamic'
+      venueProximityThreshold: resolvedThreshold,
+      thresholdMode: manualThreshold !== undefined && manualThreshold !== null
+        ? 'manual'
+        : (hasVenueRadiusOverride ? 'user_override' : 'dynamic'),
+      filters: {
+        startDate: startDate ? startDate.toISOString() : null,
+        endDate: endDate ? endDate.toISOString() : null,
+        venueRadiusKm
+      }
     };
 
     recordMetrics(responsePayload);

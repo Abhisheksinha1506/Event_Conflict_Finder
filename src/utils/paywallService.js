@@ -1,7 +1,7 @@
 const supabase = require('./supabaseClient');
 
 const TABLE_NAME = process.env.SUPABASE_PLAN_TABLE || 'user_plans';
-const FREE_SEARCH_LIMIT = parseInt(process.env.FREE_SEARCH_LIMIT || process.env.FREEMIUM_SEARCH_LIMIT || '3', 10);
+const FREE_SEARCH_LIMIT = parseInt(process.env.FREE_SEARCH_LIMIT || process.env.FREEMIUM_SEARCH_LIMIT || '5', 10);
 
 function normalizeEmail(email) {
   return (email || '').trim().toLowerCase();
@@ -78,18 +78,18 @@ async function recordSearchUsage(email) {
   
   // If user doesn't exist, they haven't paid yet - require payment
   if (!user) {
-    return { allowed: false, reason: 'payment_required', planStatus: 'unknown' };
+    return { allowed: false, reason: 'payment_required', planStatus: 'unknown', freeSearchLimit: FREE_SEARCH_LIMIT };
   }
 
   // User exists - check their plan status
   if (user.plan_status === 'active') {
-    return { allowed: true, planStatus: 'active', searchCount: user.search_count || 0 };
+    return { allowed: true, planStatus: 'active', searchCount: user.search_count || 0, freeSearchLimit: FREE_SEARCH_LIMIT };
   }
 
   // User has 'free' status - check search limit
   const currentCount = user.search_count || 0;
   if (currentCount >= FREE_SEARCH_LIMIT) {
-    return { allowed: false, planStatus: user.plan_status || 'free', searchCount: currentCount };
+    return { allowed: false, planStatus: user.plan_status || 'free', searchCount: currentCount, freeSearchLimit: FREE_SEARCH_LIMIT };
   }
 
   // Increment search count for free users
@@ -107,7 +107,8 @@ async function recordSearchUsage(email) {
   return {
     allowed: true,
     planStatus: user.plan_status || 'free',
-    searchCount: newCount
+    searchCount: newCount,
+    freeSearchLimit: FREE_SEARCH_LIMIT
   };
 }
 

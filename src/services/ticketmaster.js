@@ -2,6 +2,7 @@ const fetch = require('node-fetch');
 const rateLimiter = require('../utils/rateLimiter');
 const cacheManager = require('../utils/cacheManager');
 const requestQueue = require('../utils/requestQueue');
+const { filterEventsByDateRange } = require('../utils/searchFilters');
 
 class TicketmasterService {
   constructor() {
@@ -44,7 +45,8 @@ class TicketmasterService {
         address: venue.address?.line1 || venue.address || ''
       },
       source: 'ticketmaster',
-      url: eventUrl
+      url: eventUrl,
+      genres: this.extractGenres(eventData)
     };
   }
 
@@ -82,7 +84,7 @@ class TicketmasterService {
     return trimmed.includes('ticketmaster');
   }
 
-  async getEventsByLocation(lat, lon, radius = 10, userId = 'default') {
+  async getEventsByLocation(lat, lon, radius = 10, userId = 'default', options = {}) {
     try {
       // Check if service is enabled
       if (!this.enabled) {
@@ -96,10 +98,14 @@ class TicketmasterService {
         return [];
       }
 
+      const useCache = !options.startDate && !options.endDate;
+
       // Check cache first
-      const cached = await cacheManager.get(this.apiName, lat, lon, radius);
-      if (cached) {
-        return cached;
+      if (useCache) {
+        const cached = await cacheManager.get(this.apiName, lat, lon, radius);
+        if (cached) {
+          return cached;
+        }
       }
 
       // Check rate limits
@@ -115,7 +121,7 @@ class TicketmasterService {
         
         // If should queue, add to queue
         if (limitCheck.shouldQueue) {
-          return await requestQueue.enqueue(this.apiName, () => this.getEventsByLocation(lat, lon, radius, userId));
+          return await requestQueue.enqueue(this.apiName, () => this.getEventsByLocation(lat, lon, radius, userId, options));
         }
         
         // Otherwise, return empty with wait time info
@@ -125,20 +131,20 @@ class TicketmasterService {
 
       // If approaching limit, queue the request
       if (limitCheck.shouldQueue) {
-        return await requestQueue.enqueue(this.apiName, () => this.makeApiRequest(lat, lon, radius));
+        return await requestQueue.enqueue(this.apiName, () => this.makeApiRequest(lat, lon, radius, options));
       }
 
       // Make API request
-      return await this.makeApiRequest(lat, lon, radius);
+      return await this.makeApiRequest(lat, lon, radius, options, useCache);
     } catch (error) {
       console.error('Ticketmaster service error:', error.message);
       // Try to return cached data on error
-      const cached = await cacheManager.get(this.apiName, lat, lon, radius);
+      const cached = useCache ? await cacheManager.get(this.apiName, lat, lon, radius) : null;
       return cached || [];
     }
   }
 
-  async makeApiRequest(lat, lon, radius, retryCount = 0) {
+  async makeApiRequest(lat, lon, radius, options = {}, useCache = true, retryCount = 0) {
     // Build the API URL
     const maxSize = Math.min(200, Math.max(50, Math.round(radius * 2)));
     
@@ -149,6 +155,16 @@ class TicketmasterService {
     url.searchParams.append('size', maxSize.toString());
     url.searchParams.append('sort', 'date,asc');
     url.searchParams.append('classificationName', 'music,sports,arts,theater,comedy,family');
+
+    const startIso = this.normalizeDateForTicketmaster(options.startDate, false);
+    if (startIso) {
+      url.searchParams.append('startDateTime', startIso);
+    }
+
+    const endIso = this.normalizeDateForTicketmaster(options.endDate, true);
+    if (endIso) {
+      url.searchParams.append('endDateTime', endIso);
+    }
 
     try {
       // Make API request
@@ -211,10 +227,18 @@ class TicketmasterService {
           return event.venue && event.venue.lat && event.venue.lon && event.start && event.end;
         });
 
-      // Cache the results
-      await cacheManager.set(this.apiName, lat, lon, radius, transformedEvents);
+      const filteredEvents = filterEventsByDateRange(
+        transformedEvents,
+        options.startDate,
+        options.endDate
+      );
 
-      return transformedEvents;
+      // Cache the results when safe to do so
+      if (useCache) {
+        await cacheManager.set(this.apiName, lat, lon, radius, filteredEvents);
+      }
+
+      return filteredEvents;
     } catch (error) {
       console.error('Ticketmaster API request error:', error.message);
       
@@ -223,11 +247,76 @@ class TicketmasterService {
         const waitTime = this.retryDelay * Math.pow(2, retryCount); // Exponential backoff
         console.warn(`Ticketmaster: Network error, retrying after ${waitTime}ms`);
         await new Promise(resolve => setTimeout(resolve, waitTime));
-        return await this.makeApiRequest(lat, lon, radius, retryCount + 1);
+        return await this.makeApiRequest(lat, lon, radius, options, useCache, retryCount + 1);
       }
       
       return [];
     }
+  }
+
+  normalizeDateForTicketmaster(value, endOfDay = false) {
+    if (!value) {
+      return null;
+    }
+
+    const date = value instanceof Date ? new Date(value.getTime()) : new Date(value);
+    if (Number.isNaN(date.getTime())) {
+      return null;
+    }
+
+    if (endOfDay) {
+      date.setUTCHours(23, 59, 59, 999);
+    } else {
+      date.setUTCHours(0, 0, 0, 0);
+    }
+
+    return date.toISOString().replace(/\.\d{3}Z$/, 'Z');
+  }
+
+  extractGenres(eventData) {
+    const tags = new Set();
+    const classifications = Array.isArray(eventData?.classifications) ? eventData.classifications : [];
+
+    classifications.forEach(classification => {
+      ['segment', 'genre', 'subGenre', 'type', 'subType'].forEach(key => {
+        const candidate = classification?.[key]?.name || classification?.[key];
+        const normalized = this.normalizeGenreName(candidate);
+        if (normalized) {
+          tags.add(normalized);
+        }
+      });
+    });
+
+    if (eventData?.genre && eventData.genre.name) {
+      const normalized = this.normalizeGenreName(eventData.genre.name);
+      if (normalized) {
+        tags.add(normalized);
+      }
+    }
+
+    if (tags.size === 0 && classifications.length > 0) {
+      const fallback = this.normalizeGenreName(classifications[0]?.segment?.name);
+      if (fallback) {
+        tags.add(fallback);
+      }
+    }
+
+    if (tags.size === 0) {
+      tags.add('music');
+    }
+
+    return Array.from(tags);
+  }
+
+  normalizeGenreName(value) {
+    if (!value || typeof value !== 'string') {
+      return null;
+    }
+    const normalized = value.toLowerCase().trim();
+    if (!normalized) {
+      return null;
+    }
+    return normalized.replace(/\s+/g, ' ');
   }
 }
 

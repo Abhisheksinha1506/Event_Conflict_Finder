@@ -297,6 +297,19 @@ router.post('/webhook', async (req, res) => {
     console.error('🔔 WEBHOOK: Event type:', eventType);
     console.error('📦 WEBHOOK: Payload data keys:', Object.keys(payload?.data || {}).join(', '));
 
+    // Handle customer.created events
+    if (eventType === 'customer.created') {
+      const customerEmail = payload?.data?.email;
+      if (customerEmail) {
+        console.error('👤 WEBHOOK: Customer created:', customerEmail);
+        // This is informational - customer created in Polar
+        // User record will be created when payment succeeds (via benefit_grant.created or checkout.succeeded)
+        // Just log for tracking purposes
+      }
+      // Always return success for customer.created
+      return res.status(200).json({ received: true, event: 'customer.created', processed: true });
+    }
+
     // Handle customer.updated events
     if (eventType === 'customer.updated') {
       const customerEmail = payload?.data?.email;

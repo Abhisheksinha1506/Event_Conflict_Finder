@@ -6,7 +6,6 @@ A comprehensive event intelligence platform that identifies scheduling conflicts
 
 **Event Conflict Finder** aggregates data from Ticketmaster and Bandsintown APIs to prevent double-bookings, venue overcrowding, and audience fragmentation. Features Redis caching, rate limiting, and request queuing to handle unlimited concurrent users.
 
-> 📘 Looking for a deep-dive? See [`COMPREHENSIVE_ANALYSIS.md`](./COMPREHENSIVE_ANALYSIS.md) for a detailed architectural walkthrough of Phase 1.
 
 ## ✅ Phase 1 Deliverables
 
@@ -27,7 +26,10 @@ These deliverables complete Phase 1’s goal of validating the conflict-detect
 - **Redis Caching**: 15-minute TTL cache to reduce API calls by 80-90%
 - **Rate Limiting**: Per-user and global pool limits to prevent quota exceeding
 - **Request Queuing**: Automatic queuing when approaching rate limits
+- **Metro-aware conflict tuning**: Contextual venue proximity thresholds (1 km default, 3 km boost for dense metros, plus manual override)
+- **Date-window filtering**: Optional start/end dates so operators can lock conflict checks to the next 30 days
 - **Conflict Detection Engine**: Time-based overlap and venue proximity detection
+- **Genre Intelligence**: Normalized genre tags from Ticketmaster + Bandsintown so direct-competition conflicts bubble to the top
 - **API Routes**: 
   - `GET /api/events/search` - Search events by location
   - `POST /api/conflicts/detect` - Detect conflicts in event list
@@ -37,10 +39,12 @@ These deliverables complete Phase 1’s goal of validating the conflict-detect
 
 ### Frontend
 - **Interactive Map**: Leaflet.js integration with event markers
-- **Real-time Search**: Location-based event search
+- **Real-time Search**: Location-based event search with autocomplete dropdown
 - **Conflict Visualization**: Color-coded conflict severity display
-- **Responsive Design**: Mobile and desktop optimized
+- **Operator Controls**: Optional start/end dates and venue radius presets (1 km vs. 3 km metro mode)
+- **Responsive Design**: Mobile and desktop optimized with enhanced dropdown positioning
 - **Source Filtering**: Events from Ticketmaster and Bandsintown
+- **Enhanced UI**: Improved dropdown design, clean number inputs (no spinners), and smooth interactions
 
 ## 🚀 Getting Started
 
@@ -130,8 +134,10 @@ event-conflict-finder/
 
 1. Enter a city name in the search box (e.g., "New York", "London", "Los Angeles")
 2. Adjust the search radius (in miles) if needed
-3. Set the time buffer (in minutes) for conflict detection
-4. Click "Search Events"
+3. (Optional) Set the start/end date window for the scan
+4. (Optional) Choose the venue radius mode (1 km standard, 3 km metro boost)
+5. Set the time buffer (in minutes) for conflict detection
+6. Click "Search Events"
 
 ### Viewing Results
 
@@ -150,6 +156,7 @@ event-conflict-finder/
 The system detects conflicts when:
 - Events have overlapping time slots (within the specified buffer)
 - Events are at the same venue or within 0.5km of each other
+- Events share the same normalized genres (Ticketmaster classifications + Bandsintown metadata), which flags **direct competition** inside the conflict card
 
 Conflict types include:
 - `same_venue_conflict`: Multiple events at the same venue
@@ -215,7 +222,6 @@ Conflict types include:
 - Processes queue in FIFO order
 - Prevents quota exceeding
 
-See [RATE_LIMITING_IMPLEMENTATION.md](./RATE_LIMITING_IMPLEMENTATION.md) for detailed documentation.
 
 ## 🛠️ Development
 
@@ -248,7 +254,8 @@ See [RATE_LIMITING_IMPLEMENTATION.md](./RATE_LIMITING_IMPLEMENTATION.md) for det
 - **Caching**: Results cached for 15 minutes to reduce API calls
 - **Conflict Detection**: Uses Haversine formula for distance calculation
 - **Time Buffer**: Configurable (default: 30 minutes)
-- **Premium Searches**: Users get 3 free searches before being prompted to sign in or purchase the unlimited plan
+- **Venue Data Sources**: Ticketmaster Discovery API + Bandsintown artist fan-out feed the unified event model and genre tags
+- **Premium Searches**: Users get 5 free searches before being prompted to sign in or purchase the unlimited plan
 
 ## 💸 Premium Access & Payments
 
@@ -261,7 +268,7 @@ The application now supports a freemium flow with Supabase for entitlement stora
 | `SUPABASE_URL` | Supabase project URL |
 | `SUPABASE_SERVICE_ROLE_KEY` | Service role key (server-side only) |
 | `SUPABASE_PLAN_TABLE` | Optional. Defaults to `user_plans` |
-| `FREE_SEARCH_LIMIT` | Optional. Defaults to `3` |
+| `FREE_SEARCH_LIMIT` | Optional. Defaults to `5` |
 | `POLAR_API_KEY` | Polar API key for checkout creation |
 | `POLAR_PRODUCT_ID` | Polar product identifier for the unlimited plan (optional if `POLAR_PRODUCT_PRICE_ID` is set) |
 | `POLAR_PRODUCT_PRICE_ID` | Polar product price ID (preferred when using product pricing) |
@@ -294,8 +301,8 @@ The backend uses the Supabase service role key to insert/update plan records ser
 
 ### User Flow
 
-1. Visitors can run up to three searches anonymously.
-2. On the third search, a modal prompts them to sign in (existing plan) or create a new user and buy the plan.
+1. Visitors can run up to 5 free searches anonymously.
+2. After 5 free searches, a modal prompts them to sign in (existing plan) or create a new user and buy the plan.
 3. Existing users enter their email, which is validated against Supabase. Active plans unlock unlimited searches immediately.
 4. New users start a Polar checkout. After payment Polar redirects back with a success flag and the backend marks the plan as `active`.
 5. Returning users only need to re-enter their email next time this paywall appears.

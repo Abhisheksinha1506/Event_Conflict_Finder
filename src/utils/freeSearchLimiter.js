@@ -1,7 +1,7 @@
 const FREE_SEARCH_LIMIT = parseInt(
   process.env.FREE_SEARCH_LIMIT ||
   process.env.FREEMIUM_SEARCH_LIMIT ||
-  '3',
+  '5',
   10
 );
 

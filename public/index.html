@@ -116,7 +116,7 @@
                         </div>
                     </div>
                     <div class="console-grid">
-                        <div class="input-field">
+                        <div class="input-field input-field--location">
                             <label for="location">Location</label>
                             <div class="input-shell">
                                 <svg viewBox="0 0 24 24" class="input-icon" aria-hidden="true">
@@ -125,9 +125,12 @@
                                 </svg>
                                 <input type="text" id="location" placeholder="Search a city or venue" autocomplete="off">
                             </div>
-                            <div id="location-suggestions" class="location-suggestions"></div>
+                            <!-- Dropdown menu for location suggestions -->
+                            <div id="location-suggestions" class="location-dropdown hidden">
+                                <ul class="p-2 text-sm text-body font-medium" aria-labelledby="location" role="listbox"></ul>
+                            </div>
                         </div>
-                        <div class="input-field">
+                        <div class="input-field input-field--radius">
                             <label for="radius">Search radius (miles)</label>
                             <div class="input-shell">
                                 <svg viewBox="0 0 24 24" class="input-icon" aria-hidden="true">
@@ -136,7 +139,7 @@
                                 <input type="number" id="radius" value="25" min="1" max="100">
                             </div>
                         </div>
-                        <div class="input-field">
+                        <div class="input-field input-field--time">
                             <label for="timeBuffer">Time buffer (minutes)</label>
                             <div class="input-shell">
                                 <svg viewBox="0 0 24 24" class="input-icon" aria-hidden="true">
@@ -144,6 +147,37 @@
                                     <path d="M12 8v4l2.5 1.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
                                 </svg>
                                 <input type="number" id="timeBuffer" value="30" min="0" max="120">
+                            </div>
+                        </div>
+                        <div class="input-field input-field--start">
+                            <label for="startDate">Start date (optional)</label>
+                            <div class="input-shell">
+                                <svg viewBox="0 0 24 24" class="input-icon" aria-hidden="true">
+                                    <path d="M7 4v3m10-3v3M5 8h14M6 11h12v9H6z" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+                                </svg>
+                                <input type="date" id="startDate">
+                            </div>
+                        </div>
+                        <div class="input-field input-field--end">
+                            <label for="endDate">End date (optional)</label>
+                            <div class="input-shell">
+                                <svg viewBox="0 0 24 24" class="input-icon" aria-hidden="true">
+                                    <path d="M7 4v3m10-3v3M5 8h14M6 11h12v9H6z" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+                                </svg>
+                                <input type="date" id="endDate">
+                            </div>
+                        </div>
+                        <div class="input-field input-field--venue">
+                            <label for="venueRadiusKm">Venue radius (km)</label>
+                            <div class="input-shell">
+                                <svg viewBox="0 0 24 24" class="input-icon" aria-hidden="true">
+                                    <path d="M12 2a7 7 0 0 1 7 7c0 5-7 13-7 13s-7-8-7-13a7 7 0 0 1 7-7z" stroke="currentColor" stroke-width="1.2" fill="none"/>
+                                    <circle cx="12" cy="9" r="2.5" stroke="currentColor" stroke-width="1.2" fill="none"/>
+                                </svg>
+                                <select id="venueRadiusKm">
+                                    <option value="1" selected>1 km (standard)</option>
+                                    <option value="3">3 km (metro boost)</option>
+                                </select>
                             </div>
                         </div>
                         <div class="input-field input-field--cta">
