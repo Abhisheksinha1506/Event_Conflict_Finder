@@ -3,6 +3,7 @@ const rateLimiter = require('../utils/rateLimiter');
 const cacheManager = require('../utils/cacheManager');
 const requestQueue = require('../utils/requestQueue');
 const { filterEventsByDateRange } = require('../utils/searchFilters');
+const { getTimezoneForCoordinates } = require('../utils/timezoneHelper');
 
 class TicketmasterService {
   constructor() {
@@ -33,6 +34,10 @@ class TicketmasterService {
       endTime = start.toISOString();
     }
 
+    const venueLat = venue.location?.latitude || venue.latitude;
+    const venueLon = venue.location?.longitude || venue.longitude;
+    const timezone = (venueLat && venueLon) ? getTimezoneForCoordinates(parseFloat(venueLat), parseFloat(venueLon)) : null;
+
     return {
       id: `tm_${eventData.id}`,
       name: eventData.name || 'Untitled Event',
@@ -40,9 +45,10 @@ class TicketmasterService {
       end: endTime || startDate.dateTime || startDate.localDate,
       venue: {
         name: venue.name || 'Unknown Venue',
-        lat: venue.location?.latitude || venue.latitude,
-        lon: venue.location?.longitude || venue.longitude,
-        address: venue.address?.line1 || venue.address || ''
+        lat: venueLat,
+        lon: venueLon,
+        address: venue.address?.line1 || venue.address || '',
+        timezone: timezone
       },
       source: 'ticketmaster',
       url: eventUrl,
@@ -77,11 +83,29 @@ class TicketmasterService {
 
     const trimmed = url.trim();
 
+    // Must be a valid HTTP/HTTPS URL
     if (!/^https?:\/\//i.test(trimmed)) {
       return false;
     }
 
-    return trimmed.includes('ticketmaster');
+    // Must contain ticketmaster domain
+    if (!trimmed.includes('ticketmaster')) {
+      return false;
+    }
+
+    // Try to parse as URL to validate format
+    try {
+      const urlObj = new URL(trimmed);
+      // Ensure it's a ticketmaster domain
+      const hostname = urlObj.hostname.toLowerCase();
+      if (!hostname.includes('ticketmaster') && !hostname.includes('tm.com')) {
+        return false;
+      }
+      return true;
+    } catch (error) {
+      // Invalid URL format
+      return false;
+    }
   }
 
   async getEventsByLocation(lat, lon, radius = 10, userId = 'default', options = {}) {

@@ -44,6 +44,9 @@ class EventConflictFinder {
     this.currentFetchController = null; // AbortController for cancelling API requests
     this.clickMarker = null; // Marker for map click location
     this.zoomUpdateTimeout = null; // Timeout for debouncing zoom updates
+    this.activeTimeouts = new Set(); // Track all active timeouts for cleanup
+    this.markerLayerGroup = null; // LayerGroup for batch marker management
+    this.markerIconCache = new Map(); // Cache marker icons by color to avoid recreation
     this.isManualSearch = false; // Flag to prevent zoom updates during manual search
     this.isFittingBounds = false; // Flag to prevent zoom updates during bounds fitting
     this.lastZoomLevel = null; // Track last zoom level to detect significant changes
@@ -75,6 +78,8 @@ class EventConflictFinder {
       console.log('🔓 Unlimited access:', this.hasUnlimitedAccess);
     }
     this.logoutButton = null;
+    this.manageSubscriptionButton = null;
+    this.subscriptionModal = null;
     this.paywallModal = null;
     this.paywallMessageElement = null;
     this.searchFilters = {
@@ -116,6 +121,39 @@ class EventConflictFinder {
       return flag === 'true';
     } catch (error) {
       return false;
+    }
+  }
+
+  /**
+   * Tracked setTimeout - automatically tracks timeout IDs for cleanup
+   * Prevents memory leaks from accumulated timers
+   */
+  trackedSetTimeout(callback, delay) {
+    const timeoutId = setTimeout(() => {
+      this.activeTimeouts.delete(timeoutId);
+      callback();
+    }, delay);
+    this.activeTimeouts.add(timeoutId);
+    return timeoutId;
+  }
+
+  /**
+   * Clear all active timeouts to prevent memory leaks
+   */
+  clearAllTimeouts() {
+    this.activeTimeouts.forEach(timeoutId => {
+      clearTimeout(timeoutId);
+    });
+    this.activeTimeouts.clear();
+    
+    // Also clear specific tracked timeouts
+    if (this.suggestionTimeout) {
+      clearTimeout(this.suggestionTimeout);
+      this.suggestionTimeout = null;
+    }
+    if (this.zoomUpdateTimeout) {
+      clearTimeout(this.zoomUpdateTimeout);
+      this.zoomUpdateTimeout = null;
     }
   }
 
@@ -171,7 +209,7 @@ class EventConflictFinder {
     this.switchMapTheme(themeToApply);
 
     // Invalidate map size after a short delay to ensure container is rendered
-    setTimeout(() => {
+    this.trackedSetTimeout(() => {
       if (this.map) {
         this.map.invalidateSize();
       }
@@ -368,7 +406,10 @@ class EventConflictFinder {
       }
       
       // Only fetch suggestions if we have at least 2 characters
-      this.suggestionTimeout = setTimeout(() => {
+      if (this.suggestionTimeout) {
+        clearTimeout(this.suggestionTimeout);
+      }
+      this.suggestionTimeout = this.trackedSetTimeout(() => {
         // Double-check the input hasn't been cleared while waiting
         const currentQuery = locationInput.value.trim();
         if (currentQuery.length >= 2 && currentQuery === query) {
@@ -435,7 +476,7 @@ class EventConflictFinder {
       const suggestionsContainer = document.getElementById('location-suggestions');
       if (suggestionsContainer && !suggestionsContainer.classList.contains('hidden')) {
         // Wait for orientation change to complete
-        setTimeout(() => {
+        this.trackedSetTimeout(() => {
           this.positionSuggestionDropdown();
         }, 100);
       }
@@ -623,7 +664,7 @@ class EventConflictFinder {
       this.lastZoomLevel = this.map.getZoom();
 
       // Reset manual search flag after a short delay to allow map to settle
-      setTimeout(() => {
+      this.trackedSetTimeout(() => {
         this.isManualSearch = false;
       }, 500);
 
@@ -838,7 +879,10 @@ class EventConflictFinder {
     }
 
     // Debounce the update to avoid too many API calls
-    this.zoomUpdateTimeout = setTimeout(async () => {
+    if (this.zoomUpdateTimeout) {
+      clearTimeout(this.zoomUpdateTimeout);
+    }
+    this.zoomUpdateTimeout = this.trackedSetTimeout(async () => {
       const perfStart = typeof performance !== 'undefined' ? performance.now() : 0;
       try {
         const currentZoom = this.map.getZoom();
@@ -934,12 +978,11 @@ class EventConflictFinder {
         
         // Detect conflicts
         await this.detectConflicts(timeBuffer, filters);
-        if (!this.hasUnlimitedAccess) {
-          this.incrementFreeSearchCount();
-        }
+        // NOTE: Do NOT increment search count here - this is an auto-update from zoom/pan
+        // Only manual searches (button click) should increment the count
         
         // Ensure markers are visible after map view update
-        setTimeout(() => {
+        this.trackedSetTimeout(() => {
           this.ensureMarkersVisible();
         }, 100);
         
@@ -955,7 +998,7 @@ class EventConflictFinder {
           zoomLevel: this.lastZoomLevel
         });
       }
-    }, 500); // 500ms debounce delay
+    }, 2000); // 2 second debounce delay - prevents excessive auto-updates from zoom/pan
   }
 
   // Helper method to calculate distance between two coordinates (Haversine formula)
@@ -1041,17 +1084,22 @@ class EventConflictFinder {
       console.log('Marker pane styles:', window.getComputedStyle(markerPane));
     }
 
-    // Clear existing markers
+    // Clear existing markers using layerGroup for batch removal (performance optimization)
     if (this.markers.length > 0) {
-      this.markers.forEach(marker => {
-        try {
-          this.map.removeLayer(marker);
-        } catch (error) {
-          console.warn('Error removing marker:', error);
-        }
-      });
+      // Use layerGroup to batch remove all markers at once
+      if (!this.markerLayerGroup) {
+        this.markerLayerGroup = L.layerGroup().addTo(this.map);
+      } else {
+        // Clear all layers from the group at once
+        this.markerLayerGroup.clearLayers();
+      }
+      
+      // Clear markers array before removing to avoid redundant operations
+      this.markers = [];
+    } else if (this.markerLayerGroup) {
+      // If no markers but layerGroup exists, clear it
+      this.markerLayerGroup.clearLayers();
     }
-    this.markers = [];
     this.eventConflictsMap = {}; // Reset conflicts map
 
     if (this.events.length === 0) {
@@ -1061,7 +1109,8 @@ class EventConflictFinder {
     
     console.log(`Displaying ${this.events.length} events on map`);
 
-    eventsList.innerHTML = '';
+    // Performance optimization: Use DocumentFragment for batch DOM operations
+    const fragment = document.createDocumentFragment();
 
     // Build conflicts map for quick lookup
     this.buildConflictsMap();
@@ -1109,39 +1158,43 @@ class EventConflictFinder {
           markerPane.style.pointerEvents = 'auto';
         }
         
-        // Create a custom pin-style marker icon
-        const markerIcon = L.divIcon({
-          className: 'custom-pin-marker',
-          html: `
-            <div class="pin-container" style="position: relative; width: 30px; height: 40px;">
-              <div class="pin-shadow" style="
-                position: absolute;
-                width: 20px;
-                height: 20px;
-                background: ${markerColor};
-                border-radius: 50% 50% 50% 0;
-                transform: rotate(-45deg);
-                left: 5px;
-                top: 5px;
-                border: 2px solid white;
-                box-shadow: 0 2px 8px rgba(0,0,0,0.3);
-              "></div>
-              <div class="pin-dot" style="
-                position: absolute;
-                width: 8px;
-                height: 8px;
-                background: white;
-                border-radius: 50%;
-                left: 11px;
-                top: 11px;
-                z-index: 1;
-              "></div>
-            </div>
-          `,
-          iconSize: [30, 40],
-          iconAnchor: [15, 40],
-          popupAnchor: [0, -40]
-        });
+        // Performance optimization: Cache marker icons by color to avoid recreation
+        let markerIcon = this.markerIconCache.get(markerColor);
+        if (!markerIcon) {
+          markerIcon = L.divIcon({
+            className: 'custom-pin-marker',
+            html: `
+              <div class="pin-container" style="position: relative; width: 30px; height: 40px;">
+                <div class="pin-shadow" style="
+                  position: absolute;
+                  width: 20px;
+                  height: 20px;
+                  background: ${markerColor};
+                  border-radius: 50% 50% 50% 0;
+                  transform: rotate(-45deg);
+                  left: 5px;
+                  top: 5px;
+                  border: 2px solid white;
+                  box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+                "></div>
+                <div class="pin-dot" style="
+                  position: absolute;
+                  width: 8px;
+                  height: 8px;
+                  background: white;
+                  border-radius: 50%;
+                  left: 11px;
+                  top: 11px;
+                  z-index: 1;
+                "></div>
+              </div>
+            `,
+            iconSize: [30, 40],
+            iconAnchor: [15, 40],
+            popupAnchor: [0, -40]
+          });
+          this.markerIconCache.set(markerColor, markerIcon);
+        }
         
         const marker = L.marker([lat, lon], {
           icon: markerIcon,
@@ -1155,12 +1208,15 @@ class EventConflictFinder {
         // Store color for later use
         marker._markerColor = markerColor;
         
-        // Add marker to map
-        marker.addTo(this.map);
+        // Add marker to layerGroup for batch management (performance optimization)
+        if (!this.markerLayerGroup) {
+          this.markerLayerGroup = L.layerGroup().addTo(this.map);
+        }
+        marker.addTo(this.markerLayerGroup);
         
-        // Verify marker was added
-        if (!this.map.hasLayer(marker)) {
-          console.error(`Failed to add marker for event ${event.id} to map`);
+        // Verify marker was added (check layerGroup since marker is added to it, not directly to map)
+        if (!this.markerLayerGroup.hasLayer(marker)) {
+          console.error(`Failed to add marker for event ${event.id} to layerGroup`);
         } else {
           const markerElement = marker.getElement();
           if (!markerElement) {
@@ -1189,8 +1245,8 @@ class EventConflictFinder {
             <strong>${this.escapeHtml(event.name)}</strong><br>
             <strong>Source:</strong> ${event.source}<br>
             <strong>Venue:</strong> ${event.venue.name || 'N/A'}<br>
-            <strong>Start:</strong> ${startDate.toLocaleString()}<br>
-            <strong>End:</strong> ${endDate.toLocaleString()}<br>
+            <strong>Start:</strong> ${this.formatDateInVenueTimezone(startDate, event.venue)}<br>
+            <strong>End:</strong> ${this.formatDateInVenueTimezone(endDate, event.venue)}<br>
             ${event.url ? `<a href="${event.url}" target="_blank">View Event</a>` : ''}
             <br><br>
             <button onclick="window.selectEventFromMap('${event.id}')" style="background: #667eea; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; width: 100%; margin-top: 8px;">
@@ -1237,37 +1293,66 @@ class EventConflictFinder {
           ${conflictBadge}
         </h4>
         <p><strong>Venue:</strong> ${event.venue.name || 'N/A'}</p>
-        <p><strong>Time:</strong> ${startDate.toLocaleString()} - ${endDate.toLocaleTimeString()}</p>
+        <p><strong>Time:</strong> ${this.formatDateInVenueTimezone(startDate, event.venue)} - ${this.formatTimeInVenueTimezone(endDate, event.venue)}</p>
         ${eventGenresMarkup ? `<div class="genre-pill-row">${eventGenresMarkup}</div>` : ''}
       `;
 
       if (event.source === 'ticketmaster' && event.url) {
-        const actionsContainer = document.createElement('div');
-        actionsContainer.className = 'event-actions';
-        const ticketmasterButton = document.createElement('button');
-        ticketmasterButton.type = 'button';
-        ticketmasterButton.className = 'ticketmaster-button';
-        ticketmasterButton.textContent = 'Buy on Ticketmaster';
-        ticketmasterButton.addEventListener('click', (buttonEvent) => {
-          buttonEvent.stopPropagation();
-          try {
-            const normalizedUrl = new URL(event.url);
-            window.open(normalizedUrl.toString(), '_blank', 'noopener');
-          } catch (openError) {
-            console.error('Unable to open Ticketmaster link:', openError);
-            this.showToast('Unable to open Ticketmaster link for this event.', 'error');
-          }
-        });
-        actionsContainer.appendChild(ticketmasterButton);
-        eventItem.appendChild(actionsContainer);
+        // Validate URL before showing button
+        let isValidUrl = false;
+        try {
+          const urlObj = new URL(event.url);
+          const hostname = urlObj.hostname.toLowerCase();
+          isValidUrl = hostname.includes('ticketmaster') || hostname.includes('tm.com');
+        } catch (error) {
+          isValidUrl = false;
+        }
+
+        if (isValidUrl) {
+          const actionsContainer = document.createElement('div');
+          actionsContainer.className = 'event-actions';
+          const ticketmasterButton = document.createElement('button');
+          ticketmasterButton.type = 'button';
+          ticketmasterButton.className = 'ticketmaster-button';
+          ticketmasterButton.textContent = 'Buy on Ticketmaster';
+          ticketmasterButton.addEventListener('click', (buttonEvent) => {
+            buttonEvent.stopPropagation();
+            try {
+              const normalizedUrl = new URL(event.url);
+              window.open(normalizedUrl.toString(), '_blank', 'noopener,noreferrer');
+            } catch (openError) {
+              console.error('Unable to open Ticketmaster link:', openError);
+              this.showToast('Unable to open Ticketmaster link. The URL may be invalid.', 'error');
+            }
+          });
+          actionsContainer.appendChild(ticketmasterButton);
+          eventItem.appendChild(actionsContainer);
+        } else {
+          // Show fallback link if URL is invalid
+          const actionsContainer = document.createElement('div');
+          actionsContainer.className = 'event-actions';
+          const fallbackLink = document.createElement('a');
+          fallbackLink.href = `https://www.ticketmaster.com/search?q=${encodeURIComponent(event.name)}`;
+          fallbackLink.target = '_blank';
+          fallbackLink.rel = 'noopener noreferrer';
+          fallbackLink.className = 'ticketmaster-button';
+          fallbackLink.style.textDecoration = 'none';
+          fallbackLink.textContent = 'Search on Ticketmaster';
+          actionsContainer.appendChild(fallbackLink);
+          eventItem.appendChild(actionsContainer);
+        }
       }
       
       // Add click handler
       eventItem.addEventListener('click', () => this.selectEvent(event.id));
       eventItem.style.cursor = 'pointer';
       
-      eventsList.appendChild(eventItem);
+      // Append to fragment instead of directly to DOM (performance optimization)
+      fragment.appendChild(eventItem);
     });
+    
+    // Batch append all items at once (single DOM reflow)
+    eventsList.appendChild(fragment);
 
     // Log summary of markers created
     const markersOnMap = this.markers.filter(m => {
@@ -1328,7 +1413,7 @@ class EventConflictFinder {
             // Force map to recalculate size
             this.map.invalidateSize();
             // Try again after a short delay
-            setTimeout(() => {
+            this.trackedSetTimeout(() => {
               fitBoundsWhenReady();
             }, 200);
             return;
@@ -1336,7 +1421,7 @@ class EventConflictFinder {
 
           // Fit bounds - the map should be ready by now
           // Use a slightly longer delay to ensure everything is rendered
-          setTimeout(() => {
+          this.trackedSetTimeout(() => {
             this.fitMapToMarkers();
           }, 200);
         } catch (error) {
@@ -1346,7 +1431,7 @@ class EventConflictFinder {
 
       // Initial delay to ensure markers are fully rendered and map is ready
       // Use a longer delay to ensure everything is properly initialized
-      setTimeout(() => {
+      this.trackedSetTimeout(() => {
         fitBoundsWhenReady();
       }, 300);
     } else if (this.selectedEventId && this.markers.length > 0) {
@@ -1361,7 +1446,7 @@ class EventConflictFinder {
         });
       });
       // Use setTimeout to ensure markers are ready
-      setTimeout(() => {
+      this.trackedSetTimeout(() => {
         this.updateMapViewForSelection(this.selectedEventId, conflictingEventIds);
       }, 100);
     }
@@ -1369,7 +1454,7 @@ class EventConflictFinder {
     // If an event was previously selected, maintain selection and highlight
     if (this.selectedEventId) {
       // Use setTimeout to ensure markers are fully created
-      setTimeout(() => {
+      this.trackedSetTimeout(() => {
         this.selectEvent(this.selectedEventId);
       }, 50);
     }
@@ -1476,7 +1561,7 @@ class EventConflictFinder {
         console.log(`Fitted map to show all ${markersOnMap.length} markers (zoom range: ${fitMinZoom}-${fitMaxZoom}, bounds size: ${boundsSize.toFixed(0)}m)`);
         
         // Reset flag after a delay to allow zoom animation to complete
-        setTimeout(() => {
+        this.trackedSetTimeout(() => {
           this.isFittingBounds = false;
           this.lastZoomLevel = this.map.getZoom();
           // Invalidate size one more time to ensure everything is correct
@@ -1496,7 +1581,7 @@ class EventConflictFinder {
           if (visibleMarkers.length < markersOnMap.length) {
             console.warn(`Only ${visibleMarkers.length} of ${markersOnMap.length} markers are visible in current view. Re-fitting bounds...`);
             // Try fitting bounds again
-            setTimeout(() => {
+            this.trackedSetTimeout(() => {
               this.map.fitBounds(markerBounds, { 
                 padding: [50, 50],
                 minZoom: fitMinZoom,
@@ -1546,7 +1631,7 @@ class EventConflictFinder {
             console.log(`Centered map on marker center: [${centerLat.toFixed(4)}, ${centerLon.toFixed(4)}] at zoom ${zoomLevel}`);
             
             // Reset flag after animation
-            setTimeout(() => {
+            this.trackedSetTimeout(() => {
               this.isFittingBounds = false;
               this.lastZoomLevel = this.map.getZoom();
               this.map.invalidateSize();
@@ -1571,7 +1656,7 @@ class EventConflictFinder {
               animate: true,
               duration: 0.5
             });
-            setTimeout(() => {
+            this.trackedSetTimeout(() => {
               this.isFittingBounds = false;
               this.lastZoomLevel = this.map.getZoom();
             }, 600);
@@ -1637,7 +1722,7 @@ class EventConflictFinder {
     
     // Highlight markers and update map view
     // Use a small delay to ensure DOM is ready
-    setTimeout(() => {
+    this.trackedSetTimeout(() => {
       this.highlightConflictingEvents(String(eventId));
     }, 10);
     
@@ -1680,7 +1765,21 @@ class EventConflictFinder {
     }
 
     if (conflictCount) {
+      // Show number of conflicts this specific event is involved in
       conflictCount.textContent = eventConflicts.length;
+      // Update subtitle to clarify this is conflicts for this event
+      const subtitle = conflictCount.parentElement?.querySelector('.conflict-count-subtitle');
+      if (subtitle) {
+        subtitle.textContent = `conflict${eventConflicts.length !== 1 ? 's' : ''} for this event`;
+      } else if (conflictCount.parentElement) {
+        const newSubtitle = document.createElement('div');
+        newSubtitle.className = 'conflict-count-subtitle';
+        newSubtitle.style.fontSize = '0.75rem';
+        newSubtitle.style.color = 'rgba(255, 255, 255, 0.6)';
+        newSubtitle.style.marginTop = '4px';
+        newSubtitle.textContent = `conflict${eventConflicts.length !== 1 ? 's' : ''} for this event`;
+        conflictCount.parentElement.appendChild(newSubtitle);
+      }
     }
 
     if (!conflictList) return;
@@ -1740,14 +1839,14 @@ class EventConflictFinder {
           <li style="margin-bottom: 0.5rem;">
             <strong>${this.escapeHtml(conflict.events[0].name)}</strong><br>
             <span style="font-size: 0.8rem; color: #6b7280;">
-              ${event1Start.toLocaleString()} - ${event1End.toLocaleTimeString()}
+              ${this.formatDateInVenueTimezone(conflict.events[0].start, conflict.events[0].venue)} - ${this.formatTimeInVenueTimezone(conflict.events[0].end, conflict.events[0].venue)}
               ${isSameVenue ? '' : `<br>Venue: ${this.escapeHtml(conflict.events[0].venue?.name || 'Unknown')}`}
             </span>
           </li>
           <li>
             <strong>${this.escapeHtml(conflict.events[1].name)}</strong><br>
             <span style="font-size: 0.8rem; color: #6b7280;">
-              ${event2Start.toLocaleString()} - ${event2End.toLocaleTimeString()}
+              ${this.formatDateInVenueTimezone(conflict.events[1].start, conflict.events[1].venue)} - ${this.formatTimeInVenueTimezone(conflict.events[1].end, conflict.events[1].venue)}
               ${isSameVenue ? '' : `<br>Venue: ${this.escapeHtml(conflict.events[1].venue?.name || 'Unknown')}`}
             </span>
           </li>
@@ -2011,7 +2110,7 @@ class EventConflictFinder {
       }
     } finally {
       // Allow map-driven updates again after animation completes
-      setTimeout(() => {
+      this.trackedSetTimeout(() => {
         this.isSelectionUpdate = false;
       }, 600);
     }
@@ -2076,7 +2175,7 @@ class EventConflictFinder {
       // Restore selection and highlight after markers are recreated
       if (previouslySelectedId) {
         // Use setTimeout to ensure markers are created before highlighting
-        setTimeout(() => {
+        this.trackedSetTimeout(() => {
           this.selectEvent(previouslySelectedId);
         }, 100);
       } else {
@@ -2107,7 +2206,29 @@ class EventConflictFinder {
       conflictPanel.textContent = '🚨 Conflicts Detected';
     }
     if (conflictCount) {
-      conflictCount.textContent = this.conflicts.length;
+      // Show total conflict pairs - each conflict involves 2 events
+      const uniqueEventsInConflicts = new Set();
+      this.conflicts.forEach(conflict => {
+        conflict.events.forEach(event => {
+          uniqueEventsInConflicts.add(String(event.id));
+        });
+      });
+      conflictCount.textContent = `${this.conflicts.length} pairs`;
+      // Add subtitle to clarify
+      if (conflictCount.parentElement) {
+        const subtitle = conflictCount.parentElement.querySelector('.conflict-count-subtitle');
+        if (subtitle) {
+          subtitle.textContent = `(${uniqueEventsInConflicts.size} events involved)`;
+        } else {
+          const newSubtitle = document.createElement('div');
+          newSubtitle.className = 'conflict-count-subtitle';
+          newSubtitle.style.fontSize = '0.75rem';
+          newSubtitle.style.color = 'rgba(255, 255, 255, 0.6)';
+          newSubtitle.style.marginTop = '4px';
+          newSubtitle.textContent = `(${uniqueEventsInConflicts.size} events involved)`;
+          conflictCount.parentElement.appendChild(newSubtitle);
+        }
+      }
     }
 
     if (!conflictList) return;
@@ -2117,7 +2238,7 @@ class EventConflictFinder {
       return;
     }
 
-    conflictList.innerHTML = '<div class="empty-state"><p>👆 Click on an event to see its conflicts</p></div>';
+    conflictList.innerHTML = '<div class="empty-state"><p>👆 Click on an event to see its conflicts</p><p style="font-size: 0.8rem; margin-top: 8px; color: rgba(255,255,255,0.6);">Each conflict pair involves 2 events. Click an event to see all conflicts it\'s involved in.</p></div>';
   }
 
   getMarkerColor(source) {
@@ -2903,6 +3024,58 @@ class EventConflictFinder {
     `).openPopup();
   }
 
+  formatDateInVenueTimezone(date, venue) {
+    if (!date) return '';
+    const dateObj = date instanceof Date ? date : new Date(date);
+    if (isNaN(dateObj.getTime())) return date.toString();
+
+    const timezone = venue?.timezone;
+    if (!timezone) {
+      // Fallback to device timezone
+      return dateObj.toLocaleString();
+    }
+
+    try {
+      const formatter = new Intl.DateTimeFormat('en-US', {
+        timeZone: timezone,
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        timeZoneName: 'short'
+      });
+      return formatter.format(dateObj);
+    } catch (error) {
+      console.error('Error formatting date in timezone:', error);
+      return dateObj.toLocaleString();
+    }
+  }
+
+  formatTimeInVenueTimezone(date, venue) {
+    if (!date) return '';
+    const dateObj = date instanceof Date ? date : new Date(date);
+    if (isNaN(dateObj.getTime())) return date.toString();
+
+    const timezone = venue?.timezone;
+    if (!timezone) {
+      return dateObj.toLocaleTimeString();
+    }
+
+    try {
+      const formatter = new Intl.DateTimeFormat('en-US', {
+        timeZone: timezone,
+        hour: '2-digit',
+        minute: '2-digit',
+        timeZoneName: 'short'
+      });
+      return formatter.format(dateObj);
+    } catch (error) {
+      console.error('Error formatting time in timezone:', error);
+      return dateObj.toLocaleTimeString();
+    }
+  }
+
   escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
@@ -3078,8 +3251,14 @@ class EventConflictFinder {
     const hasUser = !!(this.userEmail && this.userEmail.trim().length > 0);
     if (hasUser) {
       this.logoutButton.classList.remove('hidden');
+      if (this.manageSubscriptionButton) {
+        this.manageSubscriptionButton.classList.remove('hidden');
+      }
     } else {
       this.logoutButton.classList.add('hidden');
+      if (this.manageSubscriptionButton) {
+        this.manageSubscriptionButton.classList.add('hidden');
+      }
     }
   }
 
@@ -3102,6 +3281,80 @@ class EventConflictFinder {
     this.freeSearchCount = 0;
     this.showToast('You have been logged out.', 'info');
     this.hidePaywallModal();
+    this.hideSubscriptionModal();
+  }
+
+  async showSubscriptionManagement() {
+    if (!this.subscriptionModal) {
+      console.error('Subscription modal not found');
+      return;
+    }
+
+    this.subscriptionModal.classList.remove('hidden');
+    const statusElement = document.getElementById('subscription-status');
+    if (!statusElement) return;
+
+    // Show loading state
+    statusElement.innerHTML = '<p>Loading subscription status...</p>';
+
+    // Fetch current plan status
+    try {
+      const response = await fetch('/api/paywall/status', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ email: this.userEmail })
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        const planStatus = data.planStatus || 'unknown';
+        const searchCount = data.searchCount || 0;
+        const freeSearchLimit = data.freeSearchLimit || 5;
+
+        let statusHTML = '';
+        if (planStatus === 'active') {
+          statusHTML = `
+            <div style="padding: 16px; background: rgba(74, 222, 128, 0.1); border-radius: 8px; border: 1px solid rgba(74, 222, 128, 0.3);">
+              <p style="margin: 0; font-weight: 600; color: #4ade80;">✓ Active Subscription</p>
+              <p style="margin: 8px 0 0 0; font-size: 0.9rem; color: rgba(255, 255, 255, 0.8);">Email: ${this.escapeHtml(this.userEmail)}</p>
+              <p style="margin: 8px 0 0 0; font-size: 0.9rem; color: rgba(255, 255, 255, 0.8);">You have unlimited searches.</p>
+            </div>
+          `;
+        } else {
+          statusHTML = `
+            <div style="padding: 16px; background: rgba(251, 191, 36, 0.1); border-radius: 8px; border: 1px solid rgba(251, 191, 36, 0.3);">
+              <p style="margin: 0; font-weight: 600; color: #fbbf24;">Free Plan</p>
+              <p style="margin: 8px 0 0 0; font-size: 0.9rem; color: rgba(255, 255, 255, 0.8);">Email: ${this.escapeHtml(this.userEmail)}</p>
+              <p style="margin: 8px 0 0 0; font-size: 0.9rem; color: rgba(255, 255, 255, 0.8);">Searches used: ${searchCount} / ${freeSearchLimit}</p>
+            </div>
+          `;
+        }
+        statusElement.innerHTML = statusHTML;
+      } else {
+        statusElement.innerHTML = `
+          <div style="padding: 16px; background: rgba(248, 113, 113, 0.1); border-radius: 8px; border: 1px solid rgba(248, 113, 113, 0.3);">
+            <p style="margin: 0; color: #f87171;">Unable to load subscription status</p>
+            <p style="margin: 8px 0 0 0; font-size: 0.9rem; color: rgba(255, 255, 255, 0.8);">Email: ${this.escapeHtml(this.userEmail || 'Not set')}</p>
+          </div>
+        `;
+      }
+    } catch (error) {
+      console.error('Error fetching subscription status:', error);
+      statusElement.innerHTML = `
+        <div style="padding: 16px; background: rgba(248, 113, 113, 0.1); border-radius: 8px; border: 1px solid rgba(248, 113, 113, 0.3);">
+          <p style="margin: 0; color: #f87171;">Error loading subscription status</p>
+          <p style="margin: 8px 0 0 0; font-size: 0.9rem; color: rgba(255, 255, 255, 0.8);">Please try again later.</p>
+        </div>
+      `;
+    }
+  }
+
+  hideSubscriptionModal() {
+    if (this.subscriptionModal) {
+      this.subscriptionModal.classList.add('hidden');
+    }
   }
 
   canProceedWithSearch() {
@@ -3161,6 +3414,24 @@ class EventConflictFinder {
     if (this.logoutButton) {
       this.logoutButton.addEventListener('click', () => this.logout());
       this.updateLogoutVisibility();
+    }
+
+    this.manageSubscriptionButton = document.getElementById('manage-subscription-button');
+    if (this.manageSubscriptionButton) {
+      this.manageSubscriptionButton.addEventListener('click', () => this.showSubscriptionManagement());
+    }
+
+    this.subscriptionModal = document.getElementById('subscription-modal');
+    const subscriptionCloseBtn = document.getElementById('subscription-modal-close');
+    if (subscriptionCloseBtn) {
+      subscriptionCloseBtn.addEventListener('click', () => this.hideSubscriptionModal());
+    }
+    if (this.subscriptionModal) {
+      this.subscriptionModal.addEventListener('click', (e) => {
+        if (e.target === this.subscriptionModal) {
+          this.hideSubscriptionModal();
+        }
+      });
     }
   }
 
@@ -3658,7 +3929,7 @@ class EventConflictFinder {
     this.globalToastElement.textContent = message;
     this.globalToastElement.setAttribute('data-variant', variant);
     this.globalToastElement.classList.remove('hidden');
-    setTimeout(() => {
+    this.trackedSetTimeout(() => {
       this.globalToastElement.classList.add('hidden');
     }, 6000);
   }
@@ -3686,6 +3957,25 @@ document.addEventListener('DOMContentLoaded', () => {
           appInstance.positionSuggestionDropdown();
         }
       }, 250);
+    });
+    
+    // Cleanup on page unload to prevent memory leaks
+    window.addEventListener('beforeunload', () => {
+      if (appInstance) {
+        appInstance.clearAllTimeouts();
+        // Clean up map resources
+        if (appInstance.map) {
+          appInstance.map.remove();
+          appInstance.map = null;
+        }
+        // Clear marker references
+        if (appInstance.markerLayerGroup) {
+          appInstance.markerLayerGroup.clearLayers();
+          appInstance.markerLayerGroup = null;
+        }
+        appInstance.markers = [];
+        appInstance.markerIconCache.clear();
+      }
     });
   }, 100);
 });

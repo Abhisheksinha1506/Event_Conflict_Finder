@@ -4,6 +4,7 @@ const cacheManager = require('../utils/cacheManager');
 const requestQueue = require('../utils/requestQueue');
 const monitoring = require('../utils/monitoring');
 const { filterEventsByDateRange } = require('../utils/searchFilters');
+const { getTimezoneForCoordinates } = require('../utils/timezoneHelper');
 
 class BandsintownService {
   constructor() {
@@ -35,6 +36,10 @@ class BandsintownService {
       ? eventData.lineup.join(', ')
       : (artistName || eventData.artist?.name || 'Untitled Event');
 
+    const venueLat = venue.latitude || venue.lat;
+    const venueLon = venue.longitude || venue.lng || venue.lon;
+    const timezone = (venueLat && venueLon) ? getTimezoneForCoordinates(parseFloat(venueLat), parseFloat(venueLon)) : null;
+
     return {
       id: `bit_${eventData.id || `${eventData.venue?.name}_${eventData.datetime}`}`,
       name: eventName,
@@ -42,9 +47,10 @@ class BandsintownService {
       end: endTime || eventData.datetime || eventData.date,
       venue: {
         name: venue.name || 'Unknown Venue',
-        lat: venue.latitude || venue.lat,
-        lon: venue.longitude || venue.lng || venue.lon,
-        address: venue.location || venue.city || ''
+        lat: venueLat,
+        lon: venueLon,
+        address: venue.location || venue.city || '',
+        timezone: timezone
       },
       source: 'bandsintown',
       url: eventData.url || eventData.facebook_rsvp_url || `https://www.bandsintown.com/e/${eventData.id}`,
@@ -179,29 +185,67 @@ class BandsintownService {
       });
 
       // Filter events by location (within radius)
+      // Performance optimization: Pre-filter by bounding box before expensive Haversine calculations
       const radiusKm = radius * 1.60934; // Convert miles to km
-      const filteredEvents = allEvents
+      
+      // Calculate approximate bounding box (faster than Haversine for initial filtering)
+      // 1 degree latitude ≈ 111 km, so we add a buffer
+      const latBuffer = radiusKm / 111;
+      const lonBuffer = radiusKm / (111 * Math.cos(lat * Math.PI / 180));
+      const minLat = lat - latBuffer;
+      const maxLat = lat + latBuffer;
+      const minLon = lon - lonBuffer;
+      const maxLon = lon + lonBuffer;
+      
+      // Transform and pre-filter by bounding box first
+      const transformedEvents = allEvents
         .map(event => this.transformEvent(event, event._artistName))
         .filter(event => {
           // Check if event has valid coordinates
           if (!event.venue || !event.venue.lat || !event.venue.lon || !event.start) {
             return false;
           }
-
-          // Calculate distance using Haversine formula
-          const distance = this.calculateDistance(
-            lat, lon,
-            parseFloat(event.venue.lat),
-            parseFloat(event.venue.lon)
-          );
-
-          return distance <= radiusKm;
+          
+          const eventLat = parseFloat(event.venue.lat);
+          const eventLon = parseFloat(event.venue.lon);
+          
+          // Fast bounding box check (O(1) vs O(n) for Haversine)
+          if (isNaN(eventLat) || isNaN(eventLon)) {
+            return false;
+          }
+          
+          // Pre-filter by bounding box
+          if (eventLat < minLat || eventLat > maxLat || eventLon < minLon || eventLon > maxLon) {
+            return false;
+          }
+          
+          return true;
         });
+      
+      // Now apply precise Haversine distance check only for events in bounding box
+      const filteredEvents = transformedEvents.filter(event => {
+        const eventLat = parseFloat(event.venue.lat);
+        const eventLon = parseFloat(event.venue.lon);
+        
+        // Calculate distance using Haversine formula (only for events in bounding box)
+        const distance = this.calculateDistance(
+          lat, lon,
+          eventLat,
+          eventLon
+        );
 
-      // Remove duplicates based on event ID
-      const uniqueEvents = filteredEvents.filter((event, index, self) =>
-        index === self.findIndex(e => e.id === event.id)
-      );
+        return distance <= radiusKm;
+      });
+
+      // Remove duplicates based on event ID (optimized from O(n²) to O(n))
+      const seenIds = new Set();
+      const uniqueEvents = filteredEvents.filter(event => {
+        if (seenIds.has(event.id)) {
+          return false;
+        }
+        seenIds.add(event.id);
+        return true;
+      });
 
       const dateFilteredEvents = filterEventsByDateRange(uniqueEvents, options.startDate, options.endDate);
 

@@ -31,7 +31,8 @@
                 </div>
             </div>
             <div class="header-actions">
-                <button id="logout-button" class="header-logout hidden">Log out</button>
+                <button id="manage-subscription-button" class="header-manage hidden">Manage Subscription</button>
+                <button id="logout-button" class="header-logout hidden">Sign Out</button>
             </div>
         </header>
 
@@ -138,6 +139,7 @@
                                 </svg>
                                 <input type="number" id="radius" value="25" min="1" max="100">
                             </div>
+                            <p class="field-help-text">How far from the location to search for events</p>
                         </div>
                         <div class="input-field input-field--time">
                             <label for="timeBuffer">Time buffer (minutes)</label>
@@ -179,6 +181,7 @@
                                     <option value="3">3 km (metro boost)</option>
                                 </select>
                             </div>
+                            <p class="field-help-text">How close venues must be to each other to count as a conflict</p>
                         </div>
                         <div class="input-field input-field--cta">
                             <label class="sr-only" for="search-btn">Search</label>
@@ -289,6 +292,34 @@
             </div>
             <div class="paywall-panel__footer">
                 <p>Re-enter the same email anytime to regain access instantly.</p>
+            </div>
+        </div>
+    </div>
+
+    <div id="subscription-modal" class="modal-overlay hidden">
+        <div class="paywall-panel animate-slide-up">
+            <div class="paywall-panel__header">
+                <h2>Manage Subscription</h2>
+                <button id="subscription-modal-close" aria-label="Close subscription modal">&times;</button>
+            </div>
+            <div class="paywall-panel__body">
+                <div class="paywall-section">
+                    <h3>Current Plan Status</h3>
+                    <div id="subscription-status" class="subscription-status">
+                        <p>Loading...</p>
+                    </div>
+                </div>
+                <div class="paywall-divider"></div>
+                <div class="paywall-section">
+                    <h3>Cancel Subscription</h3>
+                    <p>To cancel your subscription, please contact our support team. We'll process your cancellation request promptly.</p>
+                    <p><strong>Support Email:</strong> <a href="mailto:support@eventconflictfinder.com" id="support-email-link">support@eventconflictfinder.com</a></p>
+                    <p style="font-size: 0.85rem; color: rgba(255, 255, 255, 0.7); margin-top: 12px;">Include your email address in your cancellation request for faster processing.</p>
+                </div>
+                <div id="subscription-message" class="paywall-message" data-variant="info"></div>
+            </div>
+            <div class="paywall-panel__footer">
+                <p>Questions? Contact us at <a href="mailto:support@eventconflictfinder.com">support@eventconflictfinder.com</a></p>
             </div>
         </div>
     </div>

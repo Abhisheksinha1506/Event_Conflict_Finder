@@ -129,7 +129,8 @@ body {
   text-transform: uppercase;
 }
 
-.header-logout {
+.header-logout,
+.header-manage {
   border: 1px solid rgba(255, 255, 255, 0.2);
   background: transparent;
   color: var(--text-primary);
@@ -142,8 +143,15 @@ body {
   transition: all 0.2s var(--easing);
 }
 
-.header-logout:hover {
+.header-logout:hover,
+.header-manage:hover {
   background: rgba(255, 255, 255, 0.08);
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .hero {
@@ -448,6 +456,14 @@ body {
     display: flex;
   flex-direction: column;
   justify-content: flex-end;
+}
+
+.field-help-text {
+  margin-top: 6px;
+  font-size: 0.75rem;
+  color: rgba(255, 255, 255, 0.5);
+  line-height: 1.4;
+  font-style: italic;
 }
 
 .primary-btn {
